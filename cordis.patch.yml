@@ -1,0 +1,19 @@
+# dsh-learn bundle patch: inserts the learning-loop plugin row into the profile.
+# A profile that lists this bundle gets one `learn` row; later layers (the
+# profile's cordis.patch.yml or a --patch overlay) may address it by id and
+# replace its whole config.
+#
+# The plugin registers the model-facing learn_* tools on ctx.tools and persists
+# per-domain learning state (skill tree, resources, drills, attempts, SRS
+# schedule) to a JSON store outside the session log.
+
+- insert:
+    - id: learn
+      name: dsh-learn
+      config:
+        # Where per-domain learning state is stored. Empty string resolves to
+        # $DSH_HOME/dsh-learn (or ~/.dsh-learn when DSH_HOME is unset).
+        storeDir: ''
+        # Spaced-repetition pacing. Deployment-tunable, not hardcoded.
+        newSkillsPerDay: 3
+        dailyReviewLimit: 20

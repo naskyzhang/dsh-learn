@@ -1,0 +1,41 @@
+{
+  "name": "dsh-learn",
+  "version": "0.1.0",
+  "description": "A DeepSeek Harness plugin that turns learning a domain into a closed loop: deconstruct (Pareto skill tree) -> source the best experts -> gamified spaced-repetition practice -> instant feedback and retrospective.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "skills",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "learning",
+    "spaced-repetition",
+    "skill-tree"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naskyzhang/dsh-learn.git"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5",
+    "@deepseek-ai/schemastery": ">=0.1.0-rc.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=0.1.0-rc.5"
+  }
+}

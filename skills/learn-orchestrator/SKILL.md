@@ -1,0 +1,29 @@
+---
+name: learn-orchestrator
+description: Use when the user wants to learn, study, master, or get better at a domain, skill, or topic ("help me learn X", "I want to get good at Y", "teach me Z"). Drives the four-phase learning loop — deconstruct, source, practice, feedback — using the dsh-learn tools. Route to the phase-specific skills for detail.
+---
+
+# Learn Orchestrator
+
+Run learning as a closed loop, not a lecture. The methodology has four phases; each maps to a phase skill and to `learn_*` tools.
+
+## The loop
+
+1. **Deconstruct** (`deconstruct-domain` skill) — break the domain into a skill tree, rank each node by Pareto leverage. Save with `learn_curriculum`.
+2. **Source** (`source-experts` skill) — find the strongest people in the field and their primary material. Save with `learn_add_resource`.
+3. **Practice** (`practice-coach` skill) — call `learn_next_practice`, pose a gamified exercise per skill, save reusable ones with `learn_generate_drill`.
+4. **Feedback + retrospective** (`retrospective` skill) — grade each attempt immediately with `learn_log_attempt`; periodically call `learn_review` to re-weight the tree, then loop back to practice.
+
+## How to drive it
+
+- On a new domain: run phase 1, then offer phase 2, then start phase 3. Don't front-load everything — get to practice fast.
+- On a returning learner: open with `learn_status`, then go straight to `learn_next_practice`.
+- Keep feedback tight: one attempt → one `learn_log_attempt` → next. Small batches beat long quizzes.
+- After a session or when the user notices a pattern, run `learn_review` and adjust before the next cycle.
+- To visualize the skill tree or a concept map, use the `drawio-skill` (or a Mermaid code fence) on the nodes returned by `learn_status`.
+
+## Principles
+
+- **20% for 80%**: always practice the highest `leverage × (100 − mastery)` skills first; the tools already rank this way.
+- **Active recall over rereading**: drills must make the learner produce, apply, or debug — never just recognize.
+- **Respect prerequisites**: the scheduler holds back a skill whose dependencies are still weak; trust that order.

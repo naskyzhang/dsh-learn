@@ -1,0 +1,86 @@
+# dsh-learn 设计文档
+
+## 目标
+
+把「更轻松地学习一个领域」固化成一个可复用的闭环引擎。它对应一套四步学习法：
+
+1. **技能解构** —— 拆出基本要素，标出最重要的（20% 努力拿 80% 结果）。
+2. **溯源** —— 找到领域最强的人，收集其开源 / 文档 / 论文并整理。
+3. **重复练习** —— 以游戏化方式刻意练习。
+4. **即时反馈** —— 小步反馈 → 复盘 → 调整行为 → 回到第 3 步。
+
+人脑做这个循环最容易断在两处：**状态没人记**（学到哪、哪薄弱、该复习什么）和**反馈不及时**。dsh-learn 就补这两块。
+
+## 架构落点（DSH「一切皆插件」）
+
+| 需求 | 承载方式 |
+|------|---------|
+| 记住每个领域的进度 | 每领域一个 JSON 文档（`LearnStore`），存于会话日志之外的 sidecar |
+| 让模型能"建课/出题/批改" | 注册到 `ctx.tools` 的 `learn_*` 工具（`src/tools.js`） |
+| 让 Agent 知道每阶段怎么做 | 5 个 `SKILL.md`（编排 + 四阶段） |
+| 决定"下一步练什么" | `src/store.js` 里的 SM-2 间隔重复调度器 |
+| 可视化技能树 / 进度 | 里程碑 3 的 Web 仪表盘（`web/`），复用同一 JSON |
+
+插件是 **function plugin**：具名导出 `name` / `inject` / `Config` / `apply`，无默认导出（否则 Loader 会丢掉注入元数据）。
+
+## 数据模型
+
+每个领域是一个 JSON 文件 `<storeDir>/<domain-id>.json`：
+
+```jsonc
+{
+  "version": 1,
+  "id": "rust-ownership",          // 由标题 slug 化得到，稳定
+  "title": "Rust ownership",
+  "createdAt": "...", "updatedAt": "...",
+  "nodes": {                        // 技能树，键为节点 id
+    "borrowing": {
+      "id": "borrowing", "title": "借用检查", "parent": null, "deps": [],
+      "leverage": 90,               // 0-100 Pareto 杠杆分
+      "mastery": 40,                // 0-100 掌握度（分级练习更新）
+      "ease": 2.5, "intervalDays": 6, "reps": 2, "lapses": 0,  // SM-2 状态
+      "dueAt": "..."                // 下次复习时间
+    }
+  },
+  "resources": [                    // 溯源得到的资料
+    { "id": "res_..", "author": "..", "title": "..", "url": "..",
+      "type": "repo|paper|doc|video|course|other", "summary": "..", "nodeIds": ["borrowing"] }
+  ],
+  "drills":   [ { "id": "drill_..", "nodeId": "borrowing", "type": "recall|apply|explain|debug|build", "prompt": "..", "answer": ".." } ],
+  "attempts": [ { "id": "att_..", "nodeId": "borrowing", "drillId": null, "grade": 4, "note": "..", "ts": ".." } ],
+  "reviews":  [ { "id": "rev_..", "summary": "..", "adjustments": [ { "nodeId": "borrowing", "leverage": 95 } ], "ts": ".." } ],
+  "profile":  { "xp": 120, "level": 2, "streak": 3, "lastPracticeDay": "2026-08-16" }
+}
+```
+
+一切围绕 `SkillNode`：解构生成它 → 溯源给它挂资料 → 练习消耗它 → 反馈更新它的 `mastery` 与 SM-2 排程。
+
+## 调度：SM-2 间隔重复 + Pareto 排序
+
+- **重排**（`applyGrade`）：分级 0–5（SuperMemo）。0–2 视为遗忘，重置间隔为 1 天；3–5 递进（1 → 6 → `interval × ease`），并按 SM-2 公式调整 `ease`（夹在 1.3–3.0）。`mastery` 用指数滑动平均跟踪近期回忆水平。
+- **选题**（`selectPractice`）：过期越久越靠前，其次按 `leverage × (100 − mastery)`（高杠杆、低掌握优先）；依赖节点掌握度 < 50 的技能会被暂时锁住，保证按先修顺序练。
+- **游戏化**（`awardProgress`）：每次练习给 XP（基础 5 + 分级×3），按累计 XP 升级；跨天维护连续打卡 streak。
+
+## 工具清单（model-facing）
+
+| 工具 | 阶段 | 作用 |
+|------|------|------|
+| `learn_curriculum` | ① 解构 | 建/替换某领域的 Pareto 技能树 |
+| `learn_add_resource` | ② 溯源 | 记录专家资料并关联到技能节点 |
+| `learn_next_practice` | ③ 练习 | 按 SRS + 杠杆返回该练的技能 |
+| `learn_generate_drill` | ③ 练习 | 保存可复用的练习题 |
+| `learn_log_attempt` | ④ 反馈 | 记录一次分级结果，更新 SM-2 / 掌握度 / XP |
+| `learn_review` | ④ 复盘 | 记录复盘并调整技能树权重 |
+| `learn_status` | 读 | 进度仪表盘摘要 |
+
+## 里程碑
+
+- **M1（已实现）**：四模块闭环的工具 + 技能 + JSON 存储 + SM-2。纯对话即可跑通。
+- **M2**：`source-experts` 的联网研究可交给 subagent 深度检索；把练习历史导出。
+- **M3**：Web 仪表盘（技能树闯关地图 + 练习卡 + 进度图），见 `web/README.md`。
+
+## 已知限制
+
+- 学习状态存于 JSON sidecar，不进会话日志，因此单次会话记录无法完整重建学习进度（与 dsh-diagram 的 sidecar 取舍一致）。
+- 插件层针对 DeepSeek Harness 预发布 API（0.1.0-rc）编写，未在本机联调；升级 DSH 时需按下述清单校验工具注册与 `defineTool` 契约。
+- Web 仪表盘尚未实现，仅有设计与数据契约。
