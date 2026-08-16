@@ -14,7 +14,7 @@
 ## 状态
 
 - **可用**：四模块闭环的 `learn_*` 工具、5 个阶段技能、JSON 存储、SM-2 调度 —— 纯对话即可跑通。
-- **未实现**：Web 仪表盘（见 [`web/README.md`](web/README.md)，里程碑 3）。
+- **可用**：Web 视觉不另起独立页面；`dsh.client` 通过 `sidebar.footer.action` 在原页面侧栏底部增加像素猫和五阶段知识植物，并从同一 `LearnStore` 实时读取进度。详见 [`docs/UI-INTEGRATION.md`](docs/UI-INTEGRATION.md)。
 - **注意**：插件层针对 DSH 预发布 API（`0.1.0-rc`）编写，尚未在真实 DSH 上联调；安装后请按下方“校验清单”确认。
 
 ## 安装
@@ -65,6 +65,22 @@ dsh --profile web --dump-config   # 应包含 id: learn / name: dsh-learn
 | `newSkillsPerDay` | `3` | 每次练习默认引入的技能数 |
 | `dailyReviewLimit` | `20` | 单次 `learn_next_practice` 返回上限 |
 
+## 存储一致性与校验
+
+- 同一领域的修改按“读取 → 修改 → 原子写回”事务串行执行；文件锁会协调共享同一 `storeDir` 的多个 DSH 进程，不同领域仍可并行。
+- 每次写入使用独立临时文件并原子重命名；事务失败不会保存半成品，也不会阻塞后续事务。
+- 课程会拒绝重复节点、悬空父节点/依赖、自引用、父子环和依赖环；节点 ID 必须是 1–64 位小写字母、数字、`_` 或 `-`。
+- 分数严格限定为 0–5 整数，掌握度/杠杆严格限定为 0–100 整数；资源节点、练习题和复盘调整必须引用现有节点。
+
+运行单元与工具集成测试：
+
+```sh
+npm install
+npm test
+npm run typecheck:client
+npm run bundle
+```
+
 ## 目录结构
 
 ```
@@ -73,11 +89,16 @@ dsh-learn/
 ├── cordis.patch.yml      # 插入 learn 插件行
 ├── src/
 │   ├── index.js          # 插件入口：name/inject/Config/apply，注册工具
+│   ├── bridge.js         # Host Connection RPC：学习伙伴长轮询快照
+│   ├── client/           # sidebar slot、像素猫/植物与 Browser 状态控制器
 │   ├── store.js          # JSON 存储 + SM-2 间隔重复 + 数据模型
 │   └── tools.js          # 七个 learn_* 工具
+├── lib/client.js         # DSH Client loader 使用的浏览器 bundle
 ├── skills/               # 编排 + 四阶段技能（SKILL.md）
-├── web/                  # Web 仪表盘设计与数据契约（里程碑 3）
-└── docs/DESIGN.md        # 架构 / 数据模型 / 调度算法
+├── tests/                # 并发事务、课程图与工具边界测试
+└── docs/
+    ├── DESIGN.md         # 架构 / 数据模型 / 调度算法
+    └── UI-INTEGRATION.md # DSH 页面内猫与知识植物的集成设计
 ```
 
 ## 校验清单（首次装入真实 DSH 时）
@@ -86,6 +107,8 @@ dsh-learn/
 - [ ] `learn_curriculum` 能写出 `<storeDir>/<domain>.json`
 - [ ] `learn_next_practice` → `learn_log_attempt` 后，`dueAt` / `mastery` / `xp` 正确更新
 - [ ] `output` 的 `render` 返回的文本正常回显给模型
+- [ ] Web 启动清单包含 `/plugins/dsh-learn/client.js`，侧栏底部显示猫和知识植物
+- [ ] 完成一次 `learn_log_attempt` 后，植物进度与猫尾奖励动画自动更新
 - [ ] 依赖版本（`@deepseek-ai/dsh-tools`、`@deepseek-ai/schemastery`）与你的 DSH 版本匹配
 
 ## 许可

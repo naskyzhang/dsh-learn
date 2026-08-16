@@ -6,17 +6,34 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "bundle": "tsdown",
+    "test": "node --test",
+    "typecheck:client": "tsc --noEmit --jsx react-jsx --moduleResolution Bundler --module ESNext --target ES2022 --lib ES2022,DOM --allowImportingTsExtensions true src/client/index.ts"
+  },
   "files": [
     "src",
+    "lib/client.js",
+    "lib/client.js.map",
     "skills",
+    "docs",
     "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
     }
   },
   "keywords": [
@@ -33,9 +50,17 @@
   },
   "dependencies": {
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5",
-    "@deepseek-ai/schemastery": ">=0.1.0-rc.5"
+    "@deepseek-ai/schemastery": ">=0.1.0-rc.5",
+    "proper-lockfile": "^4.1.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": ">=0.1.0-rc.5"
+    "@deepseek-ai/cordis": ">=0.1.0-rc.5",
+    "react": ">=18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "react": "^19.2.8",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2"
   }
 }

@@ -14,6 +14,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import { registerCompanionBridge } from './bridge.js'
 import { LearnStore, resolveStoreDir } from './store.js'
 import { buildTools } from './tools.js'
 
@@ -42,9 +43,16 @@ export const Config = z.object({
  * @returns {void}
  */
 export function apply(ctx, config) {
+  if (!Number.isInteger(config.newSkillsPerDay) || config.newSkillsPerDay < 1) {
+    throw new Error('dsh-learn config `newSkillsPerDay` must be a positive integer')
+  }
+  if (!Number.isInteger(config.dailyReviewLimit) || config.dailyReviewLimit < 1) {
+    throw new Error('dsh-learn config `dailyReviewLimit` must be a positive integer')
+  }
   const store = new LearnStore(resolveStoreDir(config.storeDir))
   const pacing = { newSkillsPerDay: config.newSkillsPerDay, dailyReviewLimit: config.dailyReviewLimit }
   for (const tool of buildTools(store, pacing)) {
     ctx.tools.register(tool)
   }
+  registerCompanionBridge(ctx, store)
 }

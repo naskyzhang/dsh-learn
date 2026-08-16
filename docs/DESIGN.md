@@ -19,7 +19,7 @@
 | 让模型能"建课/出题/批改" | 注册到 `ctx.tools` 的 `learn_*` 工具（`src/tools.js`） |
 | 让 Agent 知道每阶段怎么做 | 5 个 `SKILL.md`（编排 + 四阶段） |
 | 决定"下一步练什么" | `src/store.js` 里的 SM-2 间隔重复调度器 |
-| 可视化技能树 / 进度 | 里程碑 3 的 Web 仪表盘（`web/`），复用同一 JSON |
+| 可视化学习进度 | DSH 原生页面内的侧栏猫与知识植物（`docs/UI-INTEGRATION.md`），复用同一 JSON |
 
 插件是 **function plugin**：具名导出 `name` / `inject` / `Config` / `apply`，无默认导出（否则 Loader 会丢掉注入元数据）。
 
@@ -55,6 +55,17 @@
 
 一切围绕 `SkillNode`：解构生成它 → 溯源给它挂资料 → 练习消耗它 → 反馈更新它的 `mastery` 与 SM-2 排程。
 
+## 存储一致性与输入边界
+
+`LearnStore.update()` 是领域级读改写事务。同一插件实例先通过 Promise 队列保持调用顺序，再通过 `proper-lockfile` 协调共享 `storeDir` 的其他进程。事务持锁后重新读取最新 JSON，只有 mutator 成功才写回；写回采用随机临时文件 + 原子 `rename`。因此并发练习不会丢失 `attempts` / XP，失败事务也不会留下部分修改。锁粒度是 domain id，不同领域不会互相阻塞。
+
+模型工具参数不能只依赖 JSON Schema 的基础类型检查，业务边界还会执行：
+
+- 课程节点 ID 唯一，父节点和依赖均存在，父子图与依赖图都无环；
+- `grade` 必须是 0–5 整数，`leverage` / `mastery` 必须是 0–100 整数，不再静默截断；
+- 资源、练习和复盘中的节点引用必须存在，`drillId` 必须存在且属于本次练习节点；
+- 标题、题目、答案、复盘等文本必须非空并有长度上限，资源地址仅接受绝对 HTTP(S) URL。
+
 ## 调度：SM-2 间隔重复 + Pareto 排序
 
 - **重排**（`applyGrade`）：分级 0–5（SuperMemo）。0–2 视为遗忘，重置间隔为 1 天；3–5 递进（1 → 6 → `interval × ease`），并按 SM-2 公式调整 `ease`（夹在 1.3–3.0）。`mastery` 用指数滑动平均跟踪近期回忆水平。
@@ -77,10 +88,10 @@
 
 - **M1（已实现）**：四模块闭环的工具 + 技能 + JSON 存储 + SM-2。纯对话即可跑通。
 - **M2**：`source-experts` 的联网研究可交给 subagent 深度检索；把练习历史导出。
-- **M3**：Web 仪表盘（技能树闯关地图 + 练习卡 + 进度图），见 `web/README.md`。
+- **M3（已实现）**：通过 `dsh.client` 和 `sidebar.footer.action` slot，把猫与知识植物嵌入 DSH 原页面；不新增独立前端。
 
 ## 已知限制
 
 - 学习状态存于 JSON sidecar，不进会话日志，因此单次会话记录无法完整重建学习进度（与 dsh-diagram 的 sidecar 取舍一致）。
 - 插件层针对 DeepSeek Harness 预发布 API（0.1.0-rc）编写，未在本机联调；升级 DSH 时需按下述清单校验工具注册与 `defineTool` 契约。
-- Web 仪表盘尚未实现，仅有设计与数据契约。
+- DSH 页面内的小组件依赖当前预发布版 Client slot 与 Connection RPC API；升级 DSH 时需重新验证 browser bundle envelope 和 slot key。

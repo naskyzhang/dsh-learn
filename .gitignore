@@ -1,5 +1,7 @@
 node_modules/
-lib/
+lib/*
+!lib/client.js
+!lib/client.js.map
 *.log
 .DS_Store
 .env

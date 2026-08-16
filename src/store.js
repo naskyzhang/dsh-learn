@@ -13,8 +13,10 @@
  */
 
 import { promises as fs } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import lockfile from 'proper-lockfile'
 
 /** Bumped only on incompatible on-disk format changes. */
 export const STORE_VERSION = 1
@@ -49,9 +51,11 @@ export function domainId(name) {
 }
 
 /**
- * Persistent learning store. One instance per plugin activation; every mutation
- * reads the target domain file, applies the change, and atomically writes it
- * back, so concurrent tool calls never corrupt a domain document.
+ * Persistent learning store. One instance per plugin activation; mutations of
+ * the same domain run as serialized read-modify-write transactions. Different
+ * domains may progress concurrently. A filesystem lock coordinates separate
+ * host processes sharing a store directory; unique temporary files and atomic
+ * renames prevent torn JSON.
  */
 export class LearnStore {
   /**
@@ -61,6 +65,10 @@ export class LearnStore {
     this.dir = dir
     /** @type {string | null} the last domain touched, used when a tool omits `domain`. */
     this.activeDomain = null
+    /** @type {Map<string, Promise<unknown>>} last queued transaction per domain. */
+    this.transactions = new Map()
+    /** @type {Set<() => void>} companion snapshot change listeners. */
+    this.changeListeners = new Set()
   }
 
   /**
@@ -93,13 +101,98 @@ export class LearnStore {
    * @returns {Promise<void>}
    */
   async save(domain) {
+    return await this.enqueue(domain.id, async () => {
+      await this.write(domain)
+    })
+  }
+
+  /**
+   * Serialize one read-modify-write transaction for a required domain.
+   * The mutator may return a value that is passed back after the write commits.
+   * @template T
+   * @param {string | undefined} name - explicit domain title, or the active domain.
+   * @param {(domain: object) => T | Promise<T>} mutator - operation applied to the latest document.
+   * @returns {Promise<T>} the mutator result after a successful atomic write.
+   */
+  async update(name, mutator) {
+    const id = this.resolveId(name)
+    return await this.enqueue(id, async () => {
+      const domain = await this.load(id)
+      if (!domain) throw new Error(`unknown learning domain '${id}'; create its curriculum first`)
+      const result = await mutator(domain)
+      await this.write(domain)
+      return result
+    })
+  }
+
+  /**
+   * Atomically write a domain while its transaction is held.
+   * @param {object} domain - the complete domain document.
+   * @returns {Promise<void>}
+   */
+  async write(domain) {
     await fs.mkdir(this.dir, { recursive: true })
-    domain.updatedAt = new Date().toISOString()
+    const previousUpdate = Date.parse(domain.updatedAt)
+    const now = Date.now()
+    domain.updatedAt = new Date(Number.isFinite(previousUpdate) && now <= previousUpdate
+      ? previousUpdate + 1
+      : now).toISOString()
     const target = this.filePath(domain.id)
-    const tmp = `${target}.${process.pid}.tmp`
-    await fs.writeFile(tmp, JSON.stringify(domain, null, 2), 'utf8')
-    await fs.rename(tmp, target)
+    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      await fs.writeFile(tmp, JSON.stringify(domain, null, 2), 'utf8')
+      await fs.rename(tmp, target)
+    } catch (error) {
+      await fs.rm(tmp, { force: true })
+      throw error
+    }
     this.activeDomain = domain.id
+    for (const listener of [...this.changeListeners]) {
+      try {
+        listener()
+      } catch {
+        // Observers are advisory UI wakeups and must never turn a committed
+        // durable write into an apparent transaction failure.
+      }
+    }
+  }
+
+  /**
+   * Queue one operation after the preceding transaction for the same domain.
+   * A rejected predecessor never poisons later work.
+   * @template T
+   * @param {string} id - domain slug id.
+   * @param {() => T | Promise<T>} operation - exclusive operation.
+   * @returns {Promise<T>} operation result.
+   */
+  async enqueue(id, operation) {
+    const previous = this.transactions.get(id) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(async () => {
+      await fs.mkdir(this.dir, { recursive: true })
+      const release = await lockfile.lock(this.filePath(id), {
+        realpath: false,
+        stale: 30_000,
+        update: 5_000,
+        retries: {
+          retries: 50,
+          factor: 1.2,
+          minTimeout: 10,
+          maxTimeout: 200,
+          randomize: true,
+        },
+      })
+      try {
+        return await operation()
+      } finally {
+        await release()
+      }
+    })
+    this.transactions.set(id, current)
+    try {
+      return await current
+    } finally {
+      if (this.transactions.get(id) === current) this.transactions.delete(id)
+    }
   }
 
   /**
@@ -121,10 +214,154 @@ export class LearnStore {
    */
   async require(name) {
     const id = this.resolveId(name)
+    const pending = this.transactions.get(id)
+    if (pending) await pending.catch(() => undefined)
     const domain = await this.load(id)
     if (!domain) throw new Error(`unknown learning domain '${id}'; create its curriculum first`)
     this.activeDomain = id
     return domain
+  }
+
+  /**
+   * Subscribe to successful local writes. Cross-process writers are observed by
+   * the long-poll timeout in {@link waitForCompanionSnapshot}.
+   * @param {() => void} listener - callback invoked after an atomic commit.
+   * @returns {() => void} disposer.
+   */
+  subscribe(listener) {
+    this.changeListeners.add(listener)
+    return () => this.changeListeners.delete(listener)
+  }
+
+  /**
+   * Return the compact, browser-safe state rendered by the sidebar companion.
+   * The most recently updated domain is selected after a Host restart.
+   * @returns {Promise<object>} companion snapshot.
+   */
+  async companionSnapshot() {
+    const id = this.activeDomain ?? await this.latestDomainId()
+    if (id === null) return emptyCompanionSnapshot()
+    const pending = this.transactions.get(id)
+    if (pending) await pending.catch(() => undefined)
+    const domain = await this.load(id)
+    if (!domain) {
+      if (this.activeDomain === id) this.activeDomain = null
+      return emptyCompanionSnapshot()
+    }
+    this.activeDomain = id
+    const xp = domain.profile.xp
+    const level = domain.profile.level
+    const levelStartXp = 50 * (level - 1) * level
+    const nextLevelXp = 50 * level * (level + 1)
+    const levelProgress = Math.round(clamp(
+      ((xp - levelStartXp) / Math.max(1, nextLevelXp - levelStartXp)) * 100,
+      0,
+      100,
+    ))
+    return {
+      domainId: domain.id,
+      domainTitle: domain.title,
+      xp,
+      level,
+      levelProgress,
+      streak: domain.profile.streak,
+      dueCount: dueCount(domain),
+      revision: domain.updatedAt,
+    }
+  }
+
+  /**
+   * Long-poll until the compact snapshot revision changes or the timeout
+   * expires. This gives the browser prompt updates without a busy polling loop.
+   * @param {string | null | undefined} revision - revision already held by the browser.
+   * @param {AbortSignal} signal - transport cancellation.
+   * @param {number} [timeoutMs] - maximum wait before checking cross-process writes.
+   * @returns {Promise<object>} latest companion snapshot.
+   */
+  async waitForCompanionSnapshot(revision, signal, timeoutMs = 20_000) {
+    const current = await this.companionSnapshot()
+    if (current.revision !== revision || signal.aborted) return current
+    await new Promise((resolve, reject) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        off()
+        signal.removeEventListener('abort', abort)
+        resolve()
+      }
+      const abort = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        off()
+        reject(signal.reason ?? new Error('companion snapshot request aborted'))
+      }
+      const fail = (error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        off()
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      }
+      const off = this.subscribe(finish)
+      const timer = setTimeout(finish, timeoutMs)
+      timer.unref?.()
+      signal.addEventListener('abort', abort, { once: true })
+      // Close the read→subscribe race: a commit between the first snapshot and
+      // listener registration is visible here even though its notification was missed.
+      void this.companionSnapshot().then((latest) => {
+        if (latest.revision !== revision) finish()
+      }, fail)
+    })
+    return await this.companionSnapshot()
+  }
+
+  /**
+   * Locate the newest persisted domain when no domain has been touched since
+   * this Host process started.
+   * @returns {Promise<string | null>} latest domain id.
+   */
+  async latestDomainId() {
+    let entries
+    try {
+      entries = await fs.readdir(this.dir, { withFileTypes: true })
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return null
+      throw error
+    }
+    const candidates = entries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(entry => entry.name.slice(0, -'.json'.length))
+    let latest = null
+    let latestMtime = -1
+    await Promise.all(candidates.map(async (id) => {
+      const stat = await fs.stat(this.filePath(id))
+      if (stat.mtimeMs > latestMtime) {
+        latest = id
+        latestMtime = stat.mtimeMs
+      }
+    }))
+    return latest
+  }
+}
+
+/**
+ * Stable empty state shown before the first curriculum exists.
+ * @returns {object} empty companion snapshot.
+ */
+function emptyCompanionSnapshot() {
+  return {
+    domainId: null,
+    domainTitle: null,
+    xp: 0,
+    level: 1,
+    levelProgress: 0,
+    streak: 0,
+    dueCount: 0,
+    revision: 'none',
   }
 }
 
@@ -175,6 +412,169 @@ export function newNode(spec) {
   }
 }
 
+/** Maximum curriculum size accepted from one model tool call. */
+const MAX_CURRICULUM_NODES = 100
+/** Stable node ids keep references compact and avoid ambiguous whitespace. */
+const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+/**
+ * Validate and normalize a model-supplied curriculum before replacing durable
+ * state. Rejects duplicate or malformed ids, dangling references, duplicate
+ * dependencies, self references, and cycles in both parent and prerequisite
+ * graphs.
+ * @param {string} title - domain title.
+ * @param {object[]} specs - model-supplied node specs.
+ * @returns {object[]} normalized node specs.
+ */
+export function validateCurriculum(title, specs) {
+  assertText('domain', title, 200)
+  if (!Array.isArray(specs) || specs.length === 0) {
+    throw new Error('invalid curriculum: `nodes` must contain at least one skill')
+  }
+  if (specs.length > MAX_CURRICULUM_NODES) {
+    throw new Error(`invalid curriculum: at most ${MAX_CURRICULUM_NODES} skills are allowed`)
+  }
+
+  const normalized = []
+  const ids = new Set()
+  for (const [index, raw] of specs.entries()) {
+    const id = assertNodeId(`nodes[${index}].id`, raw.id)
+    if (ids.has(id)) throw new Error(`invalid curriculum: duplicate node id '${id}'`)
+    ids.add(id)
+    const nodeTitle = assertText(`nodes[${index}].title`, raw.title, 200)
+    if (!Number.isInteger(raw.leverage) || raw.leverage < 0 || raw.leverage > 100) {
+      throw new Error(`invalid curriculum: nodes[${index}].leverage must be an integer from 0 to 100`)
+    }
+    const parent = raw.parent === undefined ? null : assertNodeId(`nodes[${index}].parent`, raw.parent)
+    const deps = raw.deps === undefined ? [] : validateNodeIdList(`nodes[${index}].deps`, raw.deps)
+    if (parent === id) throw new Error(`invalid curriculum: node '${id}' cannot be its own parent`)
+    if (deps.includes(id)) throw new Error(`invalid curriculum: node '${id}' cannot depend on itself`)
+    normalized.push({ id, title: nodeTitle, parent, leverage: raw.leverage, deps })
+  }
+
+  for (const node of normalized) {
+    if (node.parent !== null && !ids.has(node.parent)) {
+      throw new Error(`invalid curriculum: node '${node.id}' references unknown parent '${node.parent}'`)
+    }
+    for (const dep of node.deps) {
+      if (!ids.has(dep)) throw new Error(`invalid curriculum: node '${node.id}' references unknown dependency '${dep}'`)
+    }
+  }
+  assertAcyclic(normalized, node => node.parent === null ? [] : [node.parent], 'parent')
+  assertAcyclic(normalized, node => node.deps, 'dependency')
+  return normalized
+}
+
+/**
+ * Validate a SuperMemo grade at the tool boundary.
+ * @param {number} grade - candidate grade.
+ * @returns {number} the unchanged valid grade.
+ */
+export function validateGrade(grade) {
+  if (!Number.isInteger(grade) || grade < 0 || grade > 5) {
+    throw new Error('invalid attempt: `grade` must be an integer from 0 to 5')
+  }
+  return grade
+}
+
+/**
+ * Validate references to existing skill nodes.
+ * @param {object} domain - target domain.
+ * @param {string[]} ids - candidate node ids.
+ * @param {string} field - diagnostic field name.
+ * @param {{ allowEmpty?: boolean }} [options] - whether an empty list is accepted.
+ * @returns {string[]} normalized unique ids.
+ */
+export function validateNodeReferences(domain, ids, field, options = {}) {
+  const normalized = validateNodeIdList(field, ids)
+  if (!options.allowEmpty && normalized.length === 0) {
+    throw new Error(`invalid ${field}: at least one skill node is required`)
+  }
+  for (const id of normalized) {
+    if (!Object.hasOwn(domain.nodes, id)) throw new Error(`invalid ${field}: unknown skill node '${id}'`)
+  }
+  return normalized
+}
+
+/**
+ * Validate non-empty bounded user/model text.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} value - candidate text.
+ * @param {number} maxLength - maximum UTF-16 code-unit length.
+ * @returns {string} trimmed text.
+ */
+export function assertText(field, value, maxLength) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`invalid ${field}: must be a non-empty string`)
+  }
+  const normalized = value.trim()
+  if (normalized.length > maxLength) {
+    throw new Error(`invalid ${field}: must be at most ${maxLength} characters`)
+  }
+  return normalized
+}
+
+/**
+ * Validate a 0-100 integer without silently clamping model input.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} value - candidate value.
+ * @returns {number} valid integer.
+ */
+export function validatePercentage(field, value) {
+  if (!Number.isInteger(value) || value < 0 || value > 100) {
+    throw new Error(`invalid ${field}: must be an integer from 0 to 100`)
+  }
+  return value
+}
+
+/**
+ * Normalize and deduplicate a node-id array.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} values - candidate array.
+ * @returns {string[]} normalized ids.
+ */
+function validateNodeIdList(field, values) {
+  if (!Array.isArray(values)) throw new Error(`invalid ${field}: must be an array`)
+  const ids = values.map((value, index) => assertNodeId(`${field}[${index}]`, value))
+  if (new Set(ids).size !== ids.length) throw new Error(`invalid ${field}: duplicate node ids are not allowed`)
+  return ids
+}
+
+/**
+ * Validate one stable skill-node id.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} value - candidate id.
+ * @returns {string} valid id.
+ */
+function assertNodeId(field, value) {
+  if (typeof value !== 'string' || !NODE_ID_PATTERN.test(value)) {
+    throw new Error(`invalid ${field}: use 1-64 lowercase letters, digits, '_' or '-', starting with a letter or digit`)
+  }
+  return value
+}
+
+/**
+ * Reject a cycle in one directed projection of the curriculum.
+ * @param {object[]} nodes - validated nodes.
+ * @param {(node: object) => string[]} edgesOf - outgoing references.
+ * @param {string} label - graph name used in diagnostics.
+ * @returns {void}
+ */
+function assertAcyclic(nodes, edgesOf, label) {
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  const visiting = new Set()
+  const visited = new Set()
+  const visit = (id) => {
+    if (visiting.has(id)) throw new Error(`invalid curriculum: ${label} cycle includes '${id}'`)
+    if (visited.has(id)) return
+    visiting.add(id)
+    for (const next of edgesOf(byId.get(id))) visit(next)
+    visiting.delete(id)
+    visited.add(id)
+  }
+  for (const node of nodes) visit(node.id)
+}
+
 /**
  * Apply one graded attempt to a node's SM-2 schedule and mastery.
  *
@@ -188,7 +588,7 @@ export function newNode(spec) {
  * @returns {object} the mutated node.
  */
 export function applyGrade(node, grade, now = new Date()) {
-  const g = clamp(Math.round(grade), 0, 5)
+  const g = validateGrade(grade)
   if (g < 3) {
     node.lapses += 1
     node.reps = 0
@@ -221,7 +621,13 @@ export function applyGrade(node, grade, now = new Date()) {
  */
 export function selectPractice(domain, count, now = new Date()) {
   const nodes = Object.values(domain.nodes)
-  const masteryOf = id => (domain.nodes[id] ? domain.nodes[id].mastery : 100)
+  const masteryOf = (id) => {
+    if (!Object.hasOwn(domain.nodes, id)) {
+      throw new Error(`invalid stored curriculum: unknown dependency '${id}'`)
+    }
+    const dependency = domain.nodes[id]
+    return dependency.mastery
+  }
   const unlocked = node => node.deps.every(dep => masteryOf(dep) >= 50)
   const ready = nodes.filter(unlocked)
   const nowMs = now.getTime()
@@ -256,7 +662,7 @@ export function dueCount(domain, now = new Date()) {
  */
 export function awardProgress(domain, grade, now = new Date()) {
   const profile = domain.profile
-  const xpGained = 5 + clamp(Math.round(grade), 0, 5) * 3
+  const xpGained = 5 + validateGrade(grade) * 3
   profile.xp += xpGained
   const prevLevel = profile.level
   // Level curve: each level needs 100 more XP than the last (100, 300, 600...).
