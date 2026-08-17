@@ -23,11 +23,15 @@ export const companionStyles = `
   --cat-light: #ffd791;
   --cat-shadow: #c76b3e;
   --cat-pink: #f68a91;
-  --leaf-light: #7fc45b;
-  --leaf-dark: #33734a;
-  --pot-light: #73b9b1;
-  --pot-dark: #3d7477;
-  --pot-rim: #b9ded0;
+  --leaf-light: #8ed76b;
+  --leaf-mid: #58ad5b;
+  --leaf-dark: #2f7650;
+  --pot-light: #a79ae8;
+  --pot-dark: #65558f;
+  --pot-rim: #d5c9ff;
+  --flower-pink: #ff9fbd;
+  --flower-light: #ffd2df;
+  --flower-gold: #ffd466;
   position: relative;
   width: 100%;
   height: 136px;
@@ -102,6 +106,10 @@ export const companionStyles = `
   margin-top: 4px;
   color: var(--learn-muted);
   font-size: 10px;
+}
+
+.dsh-learn-companion[data-plant-debug="true"] .dsh-learn-meta {
+  color: #c47a2c;
 }
 
 .dsh-learn-stats {
@@ -376,111 +384,223 @@ export const companionStyles = `
 
 .dsh-learn-plant {
   position: absolute;
-  right: 0;
-  bottom: 0;
+  right: -4px;
+  bottom: -2px;
   z-index: 1;
-  width: 56px;
-  height: 64px;
+  width: 64px;
+  height: 68px;
   transform-origin: 50% 100%;
   pointer-events: none;
 }
 
+.dsh-learn-evolution-aura {
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 54px;
+  height: 54px;
+  background:
+    linear-gradient(45deg, transparent 43%, #ffe48a 43% 57%, transparent 57%),
+    linear-gradient(-45deg, transparent 43%, #ffe48a 43% 57%, transparent 57%);
+  opacity: 0;
+  transform: scale(.4);
+  image-rendering: pixelated;
+}
+
 .dsh-learn-plant-sprite {
-  width: 56px;
-  height: 64px;
+  position: relative;
+  width: 64px;
+  height: 68px;
   overflow: visible;
   transform: scaleY(var(--plant-growth, 1));
   transform-origin: 50% 100%;
+}
+
+.dsh-learn-plant-seed,
+.dsh-learn-plant-stem,
+.dsh-learn-plant-leaf,
+.dsh-learn-plant-bud,
+.dsh-learn-plant-bloom {
+  opacity: 0;
+}
+
+.dsh-learn-plant-seed path {
+  fill: #b9784d;
+  stroke: var(--pixel-outline);
+  stroke-width: 2px;
+  stroke-linejoin: miter;
+}
+
+.dsh-learn-seed-shine {
+  fill: #f1bd75;
 }
 
 .dsh-learn-plant-stem {
   fill: var(--leaf-dark);
   stroke: var(--pixel-outline);
   stroke-width: 2px;
+  opacity: 0;
   transform-box: fill-box;
   transform-origin: 50% 100%;
 }
 
 .dsh-learn-plant-leaf {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 80%;
+}
+
+.dsh-learn-plant-leaf > path:first-child {
   fill: var(--leaf-light);
   stroke: var(--pixel-outline);
-  stroke-width: 3px;
+  stroke-width: 2px;
   stroke-linejoin: miter;
-  opacity: 0;
 }
 
-.dsh-learn-plant-leaf-right {
-  fill: #65aa58;
+.dsh-learn-plant-leaf-right > path:first-child {
+  fill: var(--leaf-mid);
 }
 
-.dsh-learn-plant-leaf-upper {
-  fill: #9bd36c;
+.dsh-learn-plant-leaf-upper > path:first-child {
+  fill: #a8e477;
 }
 
-.dsh-learn-plant-bud,
-.dsh-learn-plant-bloom {
-  opacity: 0;
+.dsh-learn-leaf-shine {
+  fill: #d3f49c;
 }
 
-.dsh-learn-plant-bud path {
-  fill: #ef8da4;
-  stroke: var(--pixel-outline);
-  stroke-width: 3px;
-}
-
-.dsh-learn-plant-bud rect {
-  fill: #ffd166;
-}
-
-.dsh-learn-plant-bloom rect {
-  fill: #f3a0b2;
+.dsh-learn-bud-wrap {
+  fill: var(--flower-pink);
   stroke: var(--pixel-outline);
   stroke-width: 2px;
+  stroke-linejoin: miter;
 }
 
-.dsh-learn-plant-bloom .dsh-learn-plant-bloom-center {
-  fill: #ffd166;
+.dsh-learn-bud-heart {
+  fill: var(--flower-light);
+}
+
+.dsh-learn-petal {
+  fill: var(--flower-pink);
   stroke: var(--pixel-outline);
+  stroke-width: 2px;
+  stroke-linejoin: miter;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.dsh-learn-petal-top,
+.dsh-learn-petal-left {
+  fill: var(--flower-light);
+}
+
+.dsh-learn-petal-bottom,
+.dsh-learn-petal-right {
+  fill: #f486ad;
+}
+
+.dsh-learn-petal-shine {
+  fill: #fff1f6;
+}
+
+.dsh-learn-petal-shine-dim {
+  fill: #ffc7d8;
+}
+
+.dsh-learn-plant-bloom-center {
+  fill: var(--flower-gold);
+  stroke: var(--pixel-outline);
+  stroke-width: 2px;
+  stroke-linejoin: miter;
+}
+
+.dsh-learn-bloom-shine {
+  fill: #fff4bb;
+}
+
+.dsh-learn-bloom-seed {
+  fill: #e0952f;
+}
+
+.dsh-learn-side-bloom path {
+  fill: var(--flower-pink);
+  stroke: var(--pixel-outline);
+  stroke-width: 2px;
+  stroke-linejoin: miter;
+}
+
+.dsh-learn-side-bloom-core {
+  fill: var(--flower-gold);
+}
+
+.dsh-learn-side-bloom {
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
 .dsh-learn-pot-soil {
-  fill: #5d4037;
+  fill: #75533d;
   stroke: var(--pixel-outline);
-  stroke-width: 3px;
+  stroke-width: 2px;
 }
 
 .dsh-learn-pot-body {
   fill: var(--pot-light);
   stroke: var(--pixel-outline);
-  stroke-width: 3px;
+  stroke-width: 2px;
   stroke-linejoin: miter;
 }
 
 .dsh-learn-pot-rim {
   fill: var(--pot-rim);
   stroke: var(--pixel-outline);
-  stroke-width: 3px;
+  stroke-width: 2px;
+  stroke-linejoin: miter;
 }
 
 .dsh-learn-pot-highlight {
-  fill: #d9f1de;
+  fill: #f0eaff;
 }
 
-.dsh-learn-pot-motif {
-  fill: #ffd166;
-  stroke: var(--pot-dark);
-  stroke-width: 2px;
+.dsh-learn-pot-face,
+.dsh-learn-pot-smile {
+  fill: var(--pot-dark);
 }
 
+.dsh-learn-pot-blush {
+  fill: #f59ab3;
+}
+
+.dsh-learn-evolution-sparkles {
+  opacity: 0;
+}
+
+.dsh-learn-sparkle {
+  fill: var(--flower-gold);
+  stroke: var(--pixel-outline);
+  stroke-width: 1px;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.dsh-learn-plant[data-stage="1"] .dsh-learn-plant-seed,
+.dsh-learn-plant[data-stage="2"] .dsh-learn-plant-stem,
 .dsh-learn-plant[data-stage="2"] .dsh-learn-plant-leaf-left,
+.dsh-learn-plant[data-stage="3"] .dsh-learn-plant-stem,
 .dsh-learn-plant[data-stage="3"] .dsh-learn-plant-leaf-left,
 .dsh-learn-plant[data-stage="3"] .dsh-learn-plant-leaf-right,
+.dsh-learn-plant[data-stage="4"] .dsh-learn-plant-stem,
 .dsh-learn-plant[data-stage="4"] .dsh-learn-plant-leaf,
-.dsh-learn-plant[data-stage="5"] .dsh-learn-plant-leaf { opacity: 1; }
-.dsh-learn-plant[data-stage="4"] .dsh-learn-plant-bud { opacity: 1; }
-.dsh-learn-plant[data-stage="5"] .dsh-learn-plant-bloom { opacity: 1; }
-.dsh-learn-plant[data-stage="1"] .dsh-learn-plant-stem { transform: scaleY(.25); }
-.dsh-learn-plant[data-stage="2"] .dsh-learn-plant-stem { transform: scaleY(.65); }
+.dsh-learn-plant[data-stage="4"] .dsh-learn-plant-bud,
+.dsh-learn-plant[data-stage="5"] .dsh-learn-plant-stem,
+.dsh-learn-plant[data-stage="5"] .dsh-learn-plant-leaf,
+.dsh-learn-plant[data-stage="5"] .dsh-learn-plant-bloom {
+  opacity: 1;
+}
+
+.dsh-learn-plant[data-stage="2"] .dsh-learn-plant-stem {
+  transform: scaleY(.58);
+}
 
 .dsh-learn-companion[data-reward="true"] .dsh-learn-plant {
   animation: dsh-learn-grow 450ms steps(4, end);
@@ -488,6 +608,67 @@ export const companionStyles = `
 
 .dsh-learn-companion[data-reward="true"] .dsh-learn-cat-tail-fill {
   animation: dsh-learn-tail 420ms steps(3, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-plant {
+  animation: dsh-learn-evolution-pop 3.6s steps(12, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-evolution-aura {
+  animation: dsh-learn-evolution-aura 3.6s steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-evolution-sparkles {
+  opacity: 1;
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-sparkle-a {
+  animation: dsh-learn-sparkle-a 3.6s steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-sparkle-b {
+  animation: dsh-learn-sparkle-b 3.6s 80ms steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-sparkle-c {
+  animation: dsh-learn-sparkle-c 3.6s 160ms steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-plant-leaf-left {
+  animation: dsh-learn-leaf-cheer-left 3.6s steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-plant-leaf-right {
+  animation: dsh-learn-leaf-cheer-right 3.6s steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-plant-bloom {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dsh-learn-flower-bloom 3.6s steps(10, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-top,
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-bottom {
+  animation: dsh-learn-petal-open-a 3.6s steps(9, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-left,
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-right {
+  animation: dsh-learn-petal-open-b 3.6s steps(9, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-back-left,
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-petal-back-right {
+  animation: dsh-learn-petal-open-c 3.6s steps(9, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-side-bloom-left {
+  animation: dsh-learn-side-bloom-left 3.6s steps(8, end);
+}
+
+.dsh-learn-companion[data-evolving="true"] .dsh-learn-side-bloom-right {
+  animation: dsh-learn-side-bloom-right 3.6s steps(8, end);
 }
 
 @keyframes dsh-learn-dialog-open {
@@ -499,6 +680,106 @@ export const companionStyles = `
   0% { transform: scaleY(.9); }
   55% { transform: scaleY(1.14); }
   100% { transform: scaleY(1); }
+}
+
+@keyframes dsh-learn-evolution-pop {
+  0% { filter: brightness(1); transform: translateY(0) scale(.72, .35); }
+  8% { filter: brightness(1.8); transform: translateY(3px) scale(.82, .5); }
+  18% { filter: brightness(1.25); transform: translateY(-12px) scale(1.18, 1.22); }
+  25% { transform: translateY(-5px) scale(.94, 1.06); }
+  34% { transform: translateY(-10px) scale(1.08, 1.12); }
+  44% { transform: translateY(0) scale(1); }
+  52% { transform: translateY(-5px) rotate(-3deg); }
+  60% { transform: translateY(0) rotate(3deg); }
+  68%, 100% { filter: brightness(1); transform: translateY(0) rotate(0); }
+}
+
+@keyframes dsh-learn-evolution-aura {
+  0%, 3%, 72%, 100% { opacity: 0; transform: scale(.35) rotate(0); }
+  8% { opacity: .95; transform: scale(.7) rotate(0); }
+  20% { opacity: .72; transform: scale(1.2) rotate(45deg); }
+  34% { opacity: .45; transform: scale(1.48) rotate(90deg); }
+  52% { opacity: .18; transform: scale(1.72) rotate(135deg); }
+}
+
+@keyframes dsh-learn-sparkle-a {
+  0%, 5%, 70%, 100% { opacity: 0; transform: translate(8px, 12px) scale(.25); }
+  16% { opacity: 1; transform: translate(-3px, -4px) scale(1.15); }
+  34% { opacity: 1; transform: translate(-7px, -12px) scale(.8); }
+  54% { opacity: 0; transform: translate(-10px, -20px) scale(.35); }
+}
+
+@keyframes dsh-learn-sparkle-b {
+  0%, 8%, 75%, 100% { opacity: 0; transform: translate(-8px, 12px) scale(.2); }
+  20% { opacity: 1; transform: translate(2px, -6px) scale(1.2); }
+  38% { opacity: 1; transform: translate(7px, -14px) scale(.75); }
+  58% { opacity: 0; transform: translate(10px, -22px) scale(.3); }
+}
+
+@keyframes dsh-learn-sparkle-c {
+  0%, 12%, 78%, 100% { opacity: 0; transform: translate(-5px, 5px) scale(.25); }
+  24% { opacity: 1; transform: translate(5px, -2px) scale(1); }
+  44% { opacity: .9; transform: translate(10px, -9px) scale(.7); }
+  62% { opacity: 0; transform: translate(14px, -15px) scale(.25); }
+}
+
+@keyframes dsh-learn-leaf-cheer-left {
+  0%, 12%, 70%, 100% { transform: rotate(0) scale(1); }
+  20% { transform: rotate(-14deg) scale(1.08); }
+  30% { transform: rotate(8deg) scale(1.04); }
+  42% { transform: rotate(-8deg) scale(1.06); }
+  54% { transform: rotate(4deg) scale(1); }
+}
+
+@keyframes dsh-learn-leaf-cheer-right {
+  0%, 12%, 70%, 100% { transform: rotate(0) scale(1); }
+  20% { transform: rotate(14deg) scale(1.08); }
+  30% { transform: rotate(-8deg) scale(1.04); }
+  42% { transform: rotate(8deg) scale(1.06); }
+  54% { transform: rotate(-4deg) scale(1); }
+}
+
+@keyframes dsh-learn-flower-bloom {
+  0%, 8% { transform: scale(.25) rotate(-12deg); }
+  18% { transform: scale(1.24) rotate(8deg); }
+  28% { transform: scale(.9) rotate(-4deg); }
+  38% { transform: scale(1.1) rotate(2deg); }
+  50%, 100% { transform: scale(1) rotate(0); }
+}
+
+@keyframes dsh-learn-petal-open-a {
+  0%, 8% { opacity: 0; transform: scale(.15) translateY(7px); }
+  17% { opacity: 1; transform: scale(1.18) translateY(-2px); }
+  26% { transform: scale(.92) translateY(1px); }
+  38%, 100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes dsh-learn-petal-open-b {
+  0%, 12% { opacity: 0; transform: scale(.15) translateX(6px); }
+  21% { opacity: 1; transform: scale(1.16) translateX(-2px); }
+  31% { transform: scale(.94) translateX(1px); }
+  43%, 100% { opacity: 1; transform: scale(1) translateX(0); }
+}
+
+@keyframes dsh-learn-petal-open-c {
+  0%, 16% { opacity: 0; transform: scale(.1) rotate(-18deg); }
+  25% { opacity: 1; transform: scale(1.14) rotate(7deg); }
+  35% { transform: scale(.95) rotate(-3deg); }
+  47%, 100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes dsh-learn-side-bloom-left {
+  0%, 24% { opacity: 0; transform: scale(.1) rotate(18deg); }
+  34% { opacity: 1; transform: scale(1.2) rotate(-8deg); }
+  44% { transform: scale(.92) rotate(4deg); }
+  56%, 100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes dsh-learn-side-bloom-right {
+  0%, 28% { opacity: 0; transform: scale(.1) rotate(-18deg); }
+  38% { opacity: 1; transform: scale(1.2) rotate(8deg); }
+  48% { transform: scale(.92) rotate(-4deg); }
+  60%, 100% { opacity: 1; transform: scale(1) rotate(0); }
 }
 
 @keyframes dsh-learn-tail {

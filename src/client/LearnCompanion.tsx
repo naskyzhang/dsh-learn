@@ -8,6 +8,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import type { ObservableSnapshot, SnapshotSelectorHook } from './runtime-types.ts'
+import {
+  installPlantDebug,
+  type PlantDebugOverride,
+} from './plant-debug.ts'
 
 /** Compact state transferred from the Host learning store. */
 export interface LearnCompanionSnapshot {
@@ -39,6 +43,9 @@ const EXPANDED_HEIGHT = 136
 const VIEWPORT_MARGIN = 12
 const ADVENTURE_DURATION = 14_000
 const MEOW_DURATION = 3_600
+const EVOLUTION_DURATION = 3_600
+/** Client-only plant growth backdoor for visual QA. Disabled in shipped builds. */
+const PLANT_DEBUG_ENABLED = false
 
 type CatAction = 'adventure' | 'meow'
 
@@ -62,17 +69,31 @@ interface DragState {
 export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
   const snapshot = useCompanion(value => value)
   const previousXp = useRef<number | null>(null)
+  const previousLevel = useRef<number | null>(null)
   const drag = useRef<DragState | null>(null)
   const moved = useRef(false)
   const actionTimer = useRef<number | null>(null)
+  const evolutionTimer = useRef<number | null>(null)
   const positionRef = useRef<Position>(initialPosition())
   const [position, setPosition] = useState(positionRef.current)
   const [dragging, setDragging] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [catAction, setCatAction] = useState<CatAction | null>(null)
   const [reward, setReward] = useState(false)
-  const stage = Math.min(5, Math.max(1, snapshot.level))
+  const [evolving, setEvolving] = useState(false)
+  const [plantDebug, setPlantDebug] = useState<PlantDebugOverride | null>(null)
+  const plantDebugRef = useRef<PlantDebugOverride | null>(null)
+  plantDebugRef.current = plantDebug
+
+  const displayLevel = plantDebug?.level ?? snapshot.level
+  const displayProgress = plantDebug?.levelProgress ?? snapshot.levelProgress
+  const stage = Math.min(5, Math.max(1, displayLevel))
   const sleeping = catAction === null
+
+  const flashReward = useCallback(() => {
+    setReward(true)
+    window.setTimeout(() => { setReward(false) }, 500)
+  }, [])
 
   const moveTo = useCallback((next: Position) => {
     const bounded = clampPosition(next)
@@ -90,6 +111,27 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
       setCatAction(null)
     }, reducedMotion ? 800 : action === 'adventure' ? ADVENTURE_DURATION : MEOW_DURATION)
   }, [])
+
+  const celebrateEvolution = useCallback(() => {
+    if (evolutionTimer.current !== null) window.clearTimeout(evolutionTimer.current)
+    setEvolving(false)
+    window.requestAnimationFrame(() => {
+      setEvolving(true)
+      startCatAction('meow')
+      evolutionTimer.current = window.setTimeout(() => {
+        evolutionTimer.current = null
+        setEvolving(false)
+      }, EVOLUTION_DURATION)
+    })
+  }, [startCatAction])
+
+  const advancePlantDebug = useCallback(() => {
+    setPlantDebug((current) => {
+      const from = current?.level ?? Math.min(5, Math.max(1, snapshot.level))
+      return { level: from >= 5 ? 1 : from + 1, levelProgress: 55 }
+    })
+    celebrateEvolution()
+  }, [celebrateEvolution, snapshot.level])
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -126,12 +168,14 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
     drag.current = null
     setDragging(false)
     if (moved.current) savePosition(positionRef.current)
-    else {
+    else if (PLANT_DEBUG_ENABLED && event.metaKey) {
+      advancePlantDebug()
+    } else {
       const nextExpanded = !expanded
       setExpanded(nextExpanded)
       startCatAction(nextExpanded ? 'adventure' : 'meow')
     }
-  }, [expanded, startCatAction])
+  }, [advancePlantDebug, expanded, startCatAction])
 
   const cancelDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (drag.current?.pointerId !== event.pointerId) return
@@ -141,6 +185,29 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
   }, [])
 
   const onHandleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (PLANT_DEBUG_ENABLED && event.metaKey) {
+      if (event.key === '0') {
+        event.preventDefault()
+        setPlantDebug(null)
+        return
+      }
+      if (event.key >= '1' && event.key <= '5') {
+        event.preventDefault()
+        setPlantDebug({ level: Number(event.key), levelProgress: 55 })
+        celebrateEvolution()
+        return
+      }
+      if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault()
+        flashReward()
+        return
+      }
+      if (event.key === 'c' || event.key === 'C') {
+        event.preventDefault()
+        void window.__dshLearnPlant?.cycle()
+        return
+      }
+    }
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
       const nextExpanded = !expanded
@@ -160,16 +227,21 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
     const current = positionRef.current
     const next = moveTo({ x: current.x + delta.x, y: current.y + delta.y })
     savePosition(next)
-  }, [expanded, moveTo, startCatAction])
+  }, [celebrateEvolution, expanded, flashReward, moveTo, startCatAction])
 
   useEffect(() => {
     const previous = previousXp.current
     previousXp.current = snapshot.xp
-    if (previous === null || snapshot.xp <= previous) return
-    setReward(true)
-    const timer = window.setTimeout(() => { setReward(false) }, 500)
-    return () => { window.clearTimeout(timer) }
-  }, [snapshot.xp])
+    if (previous === null || snapshot.xp <= previous || plantDebugRef.current !== null) return
+    flashReward()
+  }, [flashReward, snapshot.xp])
+
+  useEffect(() => {
+    const previous = previousLevel.current
+    previousLevel.current = snapshot.level
+    if (previous === null || snapshot.level <= previous || plantDebugRef.current !== null) return
+    celebrateEvolution()
+  }, [celebrateEvolution, snapshot.level])
 
   useEffect(() => {
     const onResize = () => {
@@ -180,19 +252,34 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
     return () => { window.removeEventListener('resize', onResize) }
   }, [moveTo])
 
+  useEffect(() => {
+    if (!PLANT_DEBUG_ENABLED) return
+    return installPlantDebug({
+      setOverride: setPlantDebug,
+      flashReward,
+      celebrateEvolution,
+      getOverride: () => plantDebugRef.current,
+    })
+  }, [celebrateEvolution, flashReward])
+
   useEffect(() => () => {
     if (actionTimer.current !== null) window.clearTimeout(actionTimer.current)
+    if (evolutionTimer.current !== null) window.clearTimeout(evolutionTimer.current)
   }, [])
 
-  const growth = String(0.94 + snapshot.levelProgress * 0.0006)
+  const growth = String(0.94 + displayProgress * 0.0006)
   const plantStyle = { '--plant-growth': growth } as CSSProperties
   const floatStyle = {
     transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
   } as CSSProperties
-  const title = snapshot.domainTitle ?? '学习伙伴休息中'
-  const meta = snapshot.domainId === null
-    ? '创建课程后植物会发芽'
-    : `${STAGE_NAMES[stage - 1]} · ${snapshot.levelProgress}% · ${snapshot.dueCount} 项待复习`
+  const title = plantDebug !== null
+    ? `植物调试 · ${STAGE_NAMES[stage - 1]}`
+    : (snapshot.domainTitle ?? '学习伙伴休息中')
+  const meta = plantDebug !== null
+    ? `DEBUG LV.${stage} · ${displayProgress}% · ⌘+0 退出`
+    : snapshot.domainId === null
+      ? '创建课程后植物会发芽'
+      : `${STAGE_NAMES[stage - 1]} · ${displayProgress}% · ${snapshot.dueCount} 项待复习`
 
   return (
     <div className="dsh-learn-float" style={floatStyle}>
@@ -201,6 +288,8 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
         data-dragging={String(dragging)}
         data-expanded={String(expanded)}
         data-reward={String(reward)}
+        data-evolving={String(evolving)}
+        data-plant-debug={String(plantDebug !== null)}
       >
         <div
           className="dsh-learn-scene"
@@ -284,27 +373,55 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
             style={plantStyle}
             aria-hidden="true"
           >
-            <svg className="dsh-learn-plant-sprite" viewBox="0 0 56 64" shapeRendering="crispEdges">
-              <path className="dsh-learn-plant-stem" d="M25 17H31V43H25Z" />
-              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-left" d="M25 34H18V31H9V22H18V25H25Z" />
-              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-right" d="M31 27H37V23H47V14H38V17H31Z" />
-              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-upper" d="M25 21H19V17H14V9H22V12H28Z" />
+            <span className="dsh-learn-evolution-aura" />
+            <svg className="dsh-learn-plant-sprite" viewBox="0 0 64 68" shapeRendering="crispEdges">
+              <g className="dsh-learn-plant-seed">
+                <path d="M27 40H37V43H40V47H24V43H27Z" />
+                <rect className="dsh-learn-seed-shine" x="29" y="40" width="3" height="3" />
+              </g>
+              <path className="dsh-learn-plant-stem" d="M29 17H35V46H29Z" />
+              <g className="dsh-learn-plant-leaf dsh-learn-plant-leaf-left">
+                <path d="M29 39H23V37H15V33H11V25H19V27H25V31H29Z" />
+                <path className="dsh-learn-leaf-shine" d="M15 27H20V30H24V33H20V31H15Z" />
+              </g>
+              <g className="dsh-learn-plant-leaf dsh-learn-plant-leaf-right">
+                <path d="M35 34H41V30H45V27H55V35H52V39H44V41H35Z" />
+                <path className="dsh-learn-leaf-shine" d="M45 30H52V33H48V36H43V33H45Z" />
+              </g>
+              <g className="dsh-learn-plant-leaf dsh-learn-plant-leaf-upper">
+                <path d="M29 29H24V26H19V18H22V14H30V18H33V25H29Z" />
+                <path className="dsh-learn-leaf-shine" d="M23 18H27V21H29V24H25V22H23Z" />
+              </g>
               <g className="dsh-learn-plant-bud">
-                <path d="M21 12V6H24V3H32V6H35V12H32V16H24V12Z" />
-                <rect x="25" y="7" width="6" height="6" />
+                <path className="dsh-learn-bud-wrap" d="M24 15V8H27V5H37V8H40V15H37V19H27V15Z" />
+                <path className="dsh-learn-bud-heart" d="M28 9H32V11H34V9H38V14H35V17H31V14H28Z" />
               </g>
               <g className="dsh-learn-plant-bloom">
-                <rect x="24" y="1" width="8" height="8" />
-                <rect x="17" y="7" width="8" height="8" />
-                <rect x="31" y="7" width="8" height="8" />
-                <rect x="24" y="13" width="8" height="8" />
-                <rect className="dsh-learn-plant-bloom-center" x="24" y="7" width="8" height="8" />
+                <path className="dsh-learn-petal dsh-learn-petal-top" d="M30 1H34V3H35V5H36V9H35V11H34V14H30V11H29V9H28V5H29V3H30V1Z" />
+                <path className="dsh-learn-petal dsh-learn-petal-bottom" d="M30 18H34V21H35V23H36V27H35V29H34V31H30V29H29V27H28V23H29V21H30V18Z" />
+                <path className="dsh-learn-petal dsh-learn-petal-left" d="M27 12H24V11H22V10H18V11H16V12H14V20H16V21H18V22H22V21H24V20H27V12Z" />
+                <path className="dsh-learn-petal dsh-learn-petal-right" d="M37 12H40V11H42V10H46V11H48V12H50V20H48V21H46V22H42V21H40V20H37V12Z" />
+                <rect className="dsh-learn-petal-shine" x="30" y="3" width="2" height="3" />
+                <rect className="dsh-learn-petal-shine" x="17" y="13" width="3" height="2" />
+                <path className="dsh-learn-plant-bloom-center" d="M29 11H35V13H37V19H35V21H29V19H27V13H29V11Z" />
+                <rect className="dsh-learn-bloom-shine" x="30" y="13" width="3" height="3" />
               </g>
-              <rect className="dsh-learn-pot-soil" x="10" y="39" width="36" height="7" />
-              <path className="dsh-learn-pot-body" d="M12 44H44L40 61H16Z" />
-              <rect className="dsh-learn-pot-rim" x="8" y="39" width="40" height="10" />
-              <rect className="dsh-learn-pot-highlight" x="13" y="42" width="7" height="4" />
-              <path className="dsh-learn-pot-motif" d="M25 49H31V52H34V56H31V59H25V56H22V52H25Z" />
+              <g className="dsh-learn-pot">
+                <rect className="dsh-learn-pot-soil" x="11" y="43" width="42" height="7" />
+                <path className="dsh-learn-pot-body" d="M14 49H50V58H47V65H17V58H14Z" />
+                <path className="dsh-learn-pot-rim" d="M8 42H56V51H53V54H11V51H8Z" />
+                <rect className="dsh-learn-pot-highlight" x="13" y="45" width="9" height="3" />
+                <rect className="dsh-learn-pot-face" x="23" y="56" width="4" height="4" />
+                <rect className="dsh-learn-pot-face" x="37" y="56" width="4" height="4" />
+                <path className="dsh-learn-pot-smile" d="M28 60H31V62H34V60H37V63H34V65H31V63H28Z" />
+                <rect className="dsh-learn-pot-blush" x="18" y="60" width="4" height="3" />
+                <rect className="dsh-learn-pot-blush" x="42" y="60" width="4" height="3" />
+              </g>
+              <g className="dsh-learn-evolution-sparkles">
+                <path className="dsh-learn-sparkle dsh-learn-sparkle-a" d="M8 8H12V12H16V16H12V20H8V16H4V12H8Z" />
+                <path className="dsh-learn-sparkle dsh-learn-sparkle-b" d="M52 3H55V7H59V10H55V14H52V10H48V7H52Z" />
+                <path className="dsh-learn-sparkle dsh-learn-sparkle-c" d="M51 27H54V30H57V33H54V36H51V33H48V30H51Z" />
+              </g>
             </svg>
           </div>
         </div>
@@ -313,8 +430,8 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
             <div className="dsh-learn-title">{title}</div>
             <div className="dsh-learn-meta">{meta}</div>
             <div className="dsh-learn-stats">
-              <span>LV.{snapshot.level}</span>
-              <span>{snapshot.xp} XP</span>
+              <span>LV.{displayLevel}</span>
+              <span>{plantDebug !== null ? `${displayProgress}%` : `${snapshot.xp} XP`}</span>
               <span>🔥 {snapshot.streak}</span>
             </div>
           </div>
