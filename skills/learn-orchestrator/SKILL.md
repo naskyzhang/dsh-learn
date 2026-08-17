@@ -16,7 +16,11 @@ Run learning as a closed loop, not a lecture. The methodology has four phases; e
 
 ## How to drive it
 
-- On a new domain: run phase 1, then offer phase 2, then start phase 3. Don't front-load everything — get to practice fast.
+- On a new domain: call `learn_course` with `action: "list"` before phase 1. If a different unfinished course is active, **ask the user** whether to pause it or end it. Never infer the choice.
+- A pause keeps the previous course and all progress in the library. An end permanently deletes its JSON file. Pass the explicit answer as `previousCourseAction` to `learn_curriculum`.
+- To return to paused work, call `learn_course` with `action: "resume"`. If that displaces unfinished active work, ask the same pause/end question first.
+- Only call `learn_course` with `action: "end"` and `confirmed: true` after explicit user confirmation.
+- After lifecycle handling, run phase 1, then offer phase 2, then start phase 3. Don't front-load everything — get to practice fast.
 - On a returning learner: open with `learn_status`, then go straight to `learn_next_practice`.
 - Keep feedback tight: one attempt → one `learn_log_attempt` → next. Small batches beat long quizzes.
 - After a session or when the user notices a pattern, run `learn_review` and adjust before the next cycle.

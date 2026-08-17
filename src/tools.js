@@ -31,6 +31,7 @@ import {
  */
 export function buildTools(store, pacing) {
   return [
+    courseTool(store),
     curriculumTool(store),
     addResourceTool(store),
     nextPracticeTool(store, pacing),
@@ -41,6 +42,60 @@ export function buildTools(store, pacing) {
   ]
 }
 
+/** Course lifecycle — list, resume, or permanently end retained courses. */
+function courseTool(store) {
+  return defineTool({
+    name: 'learn_course',
+    description:
+      'Manage the single active learning course. Use action "list" to inspect active/paused/completed '
+      + 'courses, "resume" to continue a retained course, or "end" to permanently delete one. '
+      + 'Before resume can replace unfinished active work, ask the user whether to pause or end it.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['list', 'resume', 'end'], description: 'Lifecycle operation.' },
+      domain: { type: 'string', description: 'Required for resume/end: course title or id.' },
+      previousCourseAction: {
+        type: 'string',
+        enum: ['pause', 'end'],
+        description: 'For resume only: the user-confirmed decision for another unfinished active course.',
+      },
+      confirmed: {
+        type: 'boolean',
+        description: 'For end only: must be true after the user explicitly confirms permanent deletion.',
+      },
+    },
+    output: outputText(),
+    async execute(args) {
+      if (args.action === 'list') {
+        const courses = await store.listCourses()
+        if (courses.length === 0) return text('No learning courses in the library.')
+        const lines = courses.map(course => (
+          `- ${course.title} (id: ${course.id}, state: ${course.state}, `
+          + `mastery complete: ${course.complete ? 'yes' : 'no'}, level ${course.level}, ${course.xp} XP)`
+        ))
+        return text(`Learning courses:\n${lines.join('\n')}`)
+      }
+      const domain = assertText('domain', args.domain, 200)
+      if (args.action === 'resume') {
+        const result = await store.resumeCourse(domain, args.previousCourseAction)
+        return text(
+          result.resumed
+            ? `Resumed "${result.domainTitle}".${formatTransitions(result.previous)}`
+            : `"${result.domainTitle}" is already the active course.`,
+        )
+      }
+      if (args.action === 'end') {
+        if (args.confirmed !== true) {
+          throw new Error('ending a course permanently deletes its library file; ask the user first, then retry with confirmed true')
+        }
+        const ended = await store.endCourse(domain)
+        return text(`Ended "${ended.title}" and permanently deleted it from the learning library.`)
+      }
+      throw new Error(`invalid action '${args.action}'`)
+    },
+    presentCall: args => ({ card: 'generic', title: `Course: ${args.action}`, kind: 'other', rawInput: args }),
+  })
+}
+
 /** Step 1 — deconstruct: create or replace a domain's Pareto skill tree. */
 function curriculumTool(store) {
   return defineTool({
@@ -49,9 +104,15 @@ function curriculumTool(store) {
       'Deconstruct a domain into a skill tree and save it as the learning curriculum. '
       + 'Rank each node by `leverage` (0-100): the Pareto weight — how much of the 80% '
       + 'result this element carries. Set `deps` to prerequisite node ids so practice '
-      + 'follows learning order. Replaces any existing curriculum for the domain.',
+      + 'follows learning order. Only one course can be active. If another unfinished course '
+      + 'is active, ask the user whether to pause or end it before retrying.',
     parameters: {
       domain: { type: 'string', required: true, description: 'The domain title, e.g. "Rust ownership".' },
+      previousCourseAction: {
+        type: 'string',
+        enum: ['pause', 'end'],
+        description: 'User-confirmed decision for the previous unfinished course when switching topics.',
+      },
       nodes: {
         type: 'array',
         required: true,
@@ -74,11 +135,12 @@ function curriculumTool(store) {
       const specs = validateCurriculum(args.domain, args.nodes)
       const domain = newDomain(args.domain)
       for (const spec of specs) domain.nodes[spec.id] = newNode(spec)
-      await store.save(domain)
+      const transition = await store.startCourse(domain, args.previousCourseAction)
       const top = specs.slice().sort((a, b) => b.leverage - a.leverage).slice(0, 3)
         .map(n => `${n.title} (${n.leverage})`).join(', ')
       return text(
         `Saved curriculum for "${domain.title}" with ${specs.length} skills. `
+        + `${formatTransitions(transition.previous)}`
         + `Highest-leverage first: ${top}. Tip: render the tree with the drawio-skill, `
         + `then call learn_next_practice to start.`,
       )
@@ -319,6 +381,17 @@ function statusTool(store) {
     },
     presentCall: args => ({ card: 'generic', title: 'Learning status', kind: 'other', rawInput: args }),
   })
+}
+
+/**
+ * Render lifecycle changes performed while activating a course.
+ * @param {object[]} previous - transition records from the store.
+ * @returns {string} sentence fragment, including trailing whitespace.
+ */
+function formatTransitions(previous) {
+  if (!previous || previous.length === 0) return ''
+  const changes = previous.map(item => `${item.action} "${item.title}"`).join(', ')
+  return `Previous course: ${changes}. `
 }
 
 /**

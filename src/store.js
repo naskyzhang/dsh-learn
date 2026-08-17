@@ -24,6 +24,22 @@ export const STORE_VERSION = 1
 /** One day in milliseconds; the scheduler's time unit. */
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/** Shared retry policy for per-course and store-wide filesystem locks. */
+function lockOptions() {
+  return {
+    realpath: false,
+    stale: 30_000,
+    update: 5_000,
+    retries: {
+      retries: 50,
+      factor: 1.2,
+      minTimeout: 10,
+      maxTimeout: 200,
+      randomize: true,
+    },
+  }
+}
+
 /**
  * Resolve the directory that holds one JSON file per learning domain.
  * @param {string} configured - the plugin's `storeDir` config; empty means derive a default.
@@ -51,11 +67,10 @@ export function domainId(name) {
 }
 
 /**
- * Persistent learning store. One instance per plugin activation; mutations of
- * the same domain run as serialized read-modify-write transactions. Different
- * domains may progress concurrently. A filesystem lock coordinates separate
- * host processes sharing a store directory; unique temporary files and atomic
- * renames prevent torn JSON.
+ * Persistent learning store. One instance per plugin activation; mutations run
+ * as serialized read-modify-write transactions. A store-wide lifecycle lock
+ * keeps the single-active-course invariant coherent across Host processes;
+ * unique temporary files and atomic renames prevent torn JSON.
  */
 export class LearnStore {
   /**
@@ -67,6 +82,8 @@ export class LearnStore {
     this.activeDomain = null
     /** @type {Map<string, Promise<unknown>>} last queued transaction per domain. */
     this.transactions = new Map()
+    /** @type {Promise<unknown>} last operation using the store-wide lifecycle lock. */
+    this.lifecycleTransaction = Promise.resolve()
     /** @type {Set<() => void>} companion snapshot change listeners. */
     this.changeListeners = new Set()
   }
@@ -96,6 +113,164 @@ export class LearnStore {
   }
 
   /**
+   * List every retained course with its persisted lifecycle state.
+   * @returns {Promise<object[]>} newest-first course summaries.
+   */
+  async listCourses() {
+    let entries
+    try {
+      entries = await fs.readdir(this.dir, { withFileTypes: true })
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return []
+      throw error
+    }
+    const documents = (await Promise.all(entries
+      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+      .map(async (entry) => {
+        const id = entry.name.slice(0, -'.json'.length)
+        const domain = await this.load(id)
+        if (!domain) return null
+        return {
+          id: domain.id,
+          title: domain.title,
+          state: courseState(domain),
+          complete: isCourseComplete(domain),
+          updatedAt: domain.updatedAt,
+          xp: domain.profile?.xp ?? 0,
+          level: domain.profile?.level ?? 1,
+        }
+      })))
+      .filter(Boolean)
+    return documents.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  }
+
+  /**
+   * Start a newly built curriculum while preserving the single-active-course invariant.
+   * @param {object} domain - validated new domain document.
+   * @param {'pause' | 'end' | undefined} previousAction - user's decision for unfinished active work.
+   * @returns {Promise<object>} transition summary.
+   */
+  async startCourse(domain, previousAction) {
+    return await this.withLifecycleLock(async () => {
+      const existing = await this.load(domain.id)
+      if (existing && courseState(existing) !== 'active') {
+        throw new Error(
+          `learning course "${existing.title}" already exists with state '${courseState(existing)}'; `
+          + 'resume it with learn_course instead of replacing its progress',
+        )
+      }
+      const active = await this.activeCourseDocuments(domain.id)
+      const transition = await this.transitionCourses(active, previousAction, domain.title)
+      await this.write(domain)
+      return transition
+    })
+  }
+
+  /**
+   * Resume a retained paused/completed course, resolving any other active course first.
+   * @param {string} name - target course title or id.
+   * @param {'pause' | 'end' | undefined} previousAction - user's decision for unfinished active work.
+   * @returns {Promise<object>} transition summary.
+   */
+  async resumeCourse(name, previousAction) {
+    const id = domainId(assertText('domain', name, 200))
+    return await this.withLifecycleLock(async () => {
+      const target = await this.load(id)
+      if (!target) throw new Error(`unknown learning course '${id}'`)
+      if (courseState(target) === 'active') {
+        this.activeDomain = id
+        return { domainTitle: target.title, resumed: false, previous: [] }
+      }
+      const active = await this.activeCourseDocuments(id)
+      const transition = await this.transitionCourses(active, previousAction, target.title)
+      const now = new Date().toISOString()
+      target.lifecycle = {
+        ...(target.lifecycle ?? {}),
+        state: 'active',
+        pausedAt: null,
+        completedAt: null,
+        resumedAt: now,
+      }
+      await this.write(target)
+      return { ...transition, domainTitle: target.title, resumed: true }
+    })
+  }
+
+  /**
+   * Permanently remove a course document from the library.
+   * @param {string} name - explicit course title or id.
+   * @returns {Promise<object>} deleted course identity.
+   */
+  async endCourse(name) {
+    const id = domainId(assertText('domain', name, 200))
+    return await this.withLifecycleLock(async () => {
+      const domain = await this.load(id)
+      if (!domain) throw new Error(`unknown learning course '${id}'`)
+      await fs.rm(this.filePath(id), { force: true })
+      if (this.activeDomain === id) this.activeDomain = null
+      this.notifyChange()
+      return { id, title: domain.title }
+    })
+  }
+
+  /**
+   * Return all persisted active course documents except an optional target id.
+   * @param {string} [excludeId] - course that is about to become active.
+   * @returns {Promise<object[]>} active documents, newest first.
+   */
+  async activeCourseDocuments(excludeId) {
+    const summaries = await this.listCourses()
+    const active = summaries.filter(item => item.state === 'active' && item.id !== excludeId)
+    return (await Promise.all(active.map(item => this.load(item.id)))).filter(Boolean)
+  }
+
+  /**
+   * Pause/delete active courses, or archive already-complete ones automatically.
+   * @param {object[]} active - currently active documents other than the target.
+   * @param {'pause' | 'end' | undefined} previousAction - explicit user decision.
+   * @param {string} nextTitle - course the user is trying to activate.
+   * @returns {Promise<object>} transition summary.
+   */
+  async transitionCourses(active, previousAction, nextTitle) {
+    if (!['pause', 'end', undefined].includes(previousAction)) {
+      throw new Error('invalid previousCourseAction: expected "pause" or "end"')
+    }
+    const unfinished = active.filter(domain => !isCourseComplete(domain))
+    if (unfinished.length > 0 && previousAction === undefined) {
+      const titles = unfinished.map(domain => `"${domain.title}"`).join(', ')
+      throw new Error(
+        `before starting "${nextTitle}", ask the user whether to pause or end unfinished course ${titles}; `
+        + 'then retry with previousCourseAction "pause" or "end"',
+      )
+    }
+    const changed = []
+    for (const domain of active) {
+      if (previousAction === 'end') {
+        await fs.rm(this.filePath(domain.id), { force: true })
+        changed.push({ id: domain.id, title: domain.title, action: 'ended' })
+        continue
+      }
+      const complete = isCourseComplete(domain)
+      const now = new Date().toISOString()
+      domain.lifecycle = {
+        ...(domain.lifecycle ?? {}),
+        state: complete && previousAction === undefined ? 'completed' : 'paused',
+        pausedAt: complete && previousAction === undefined ? null : now,
+        completedAt: complete && previousAction === undefined ? now : null,
+      }
+      await this.write(domain)
+      changed.push({
+        id: domain.id,
+        title: domain.title,
+        action: complete && previousAction === undefined ? 'completed' : 'paused',
+      })
+    }
+    if (active.some(domain => domain.id === this.activeDomain)) this.activeDomain = null
+    if (changed.length > 0) this.notifyChange()
+    return { previous: changed }
+  }
+
+  /**
    * Atomically persist a domain document (temp file + rename).
    * @param {object} domain - the domain document to write.
    * @returns {Promise<void>}
@@ -119,6 +294,9 @@ export class LearnStore {
     return await this.enqueue(id, async () => {
       const domain = await this.load(id)
       if (!domain) throw new Error(`unknown learning domain '${id}'; create its curriculum first`)
+      if (courseState(domain) !== 'active') {
+        throw new Error(`learning course "${domain.title}" is ${courseState(domain)}; resume it with learn_course first`)
+      }
       const result = await mutator(domain)
       await this.write(domain)
       return result
@@ -146,7 +324,13 @@ export class LearnStore {
       await fs.rm(tmp, { force: true })
       throw error
     }
-    this.activeDomain = domain.id
+    if (courseState(domain) === 'active') this.activeDomain = domain.id
+    else if (this.activeDomain === domain.id) this.activeDomain = null
+    this.notifyChange()
+  }
+
+  /** Notify advisory companion listeners after a durable lifecycle change. */
+  notifyChange() {
     for (const listener of [...this.changeListeners]) {
       try {
         listener()
@@ -167,31 +351,46 @@ export class LearnStore {
    */
   async enqueue(id, operation) {
     const previous = this.transactions.get(id) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(async () => (
+      await this.withLifecycleLock(async () => {
+        const release = await lockfile.lock(this.filePath(id), lockOptions())
+        try {
+          return await operation()
+        } finally {
+          await release()
+        }
+      })
+    ))
+    this.transactions.set(id, current)
+    try {
+      return await current
+    } finally {
+      if (this.transactions.get(id) === current) this.transactions.delete(id)
+    }
+  }
+
+  /**
+   * Serialize lifecycle-sensitive operations in-process and across Host processes.
+   * @template T
+   * @param {() => T | Promise<T>} operation - operation holding the global course lock.
+   * @returns {Promise<T>} operation result.
+   */
+  async withLifecycleLock(operation) {
+    const previous = this.lifecycleTransaction
     const current = previous.catch(() => undefined).then(async () => {
       await fs.mkdir(this.dir, { recursive: true })
-      const release = await lockfile.lock(this.filePath(id), {
-        realpath: false,
-        stale: 30_000,
-        update: 5_000,
-        retries: {
-          retries: 50,
-          factor: 1.2,
-          minTimeout: 10,
-          maxTimeout: 200,
-          randomize: true,
-        },
-      })
+      const release = await lockfile.lock(path.join(this.dir, '.courses'), lockOptions())
       try {
         return await operation()
       } finally {
         await release()
       }
     })
-    this.transactions.set(id, current)
+    this.lifecycleTransaction = current
     try {
       return await current
     } finally {
-      if (this.transactions.get(id) === current) this.transactions.delete(id)
+      if (this.lifecycleTransaction === current) this.lifecycleTransaction = Promise.resolve()
     }
   }
 
@@ -218,6 +417,9 @@ export class LearnStore {
     if (pending) await pending.catch(() => undefined)
     const domain = await this.load(id)
     if (!domain) throw new Error(`unknown learning domain '${id}'; create its curriculum first`)
+    if (courseState(domain) !== 'active') {
+      throw new Error(`learning course "${domain.title}" is ${courseState(domain)}; resume it with learn_course first`)
+    }
     this.activeDomain = id
     return domain
   }
@@ -247,6 +449,10 @@ export class LearnStore {
     if (!domain) {
       if (this.activeDomain === id) this.activeDomain = null
       return emptyCompanionSnapshot()
+    }
+    if (courseState(domain) !== 'active') {
+      if (this.activeDomain === id) this.activeDomain = null
+      return await this.companionSnapshot()
     }
     this.activeDomain = id
     const xp = domain.profile.xp
@@ -325,26 +531,8 @@ export class LearnStore {
    * @returns {Promise<string | null>} latest domain id.
    */
   async latestDomainId() {
-    let entries
-    try {
-      entries = await fs.readdir(this.dir, { withFileTypes: true })
-    } catch (error) {
-      if (error && error.code === 'ENOENT') return null
-      throw error
-    }
-    const candidates = entries
-      .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
-      .map(entry => entry.name.slice(0, -'.json'.length))
-    let latest = null
-    let latestMtime = -1
-    await Promise.all(candidates.map(async (id) => {
-      const stat = await fs.stat(this.filePath(id))
-      if (stat.mtimeMs > latestMtime) {
-        latest = id
-        latestMtime = stat.mtimeMs
-      }
-    }))
-    return latest
+    const courses = await this.listCourses()
+    return courses.find(course => course.state === 'active')?.id ?? null
   }
 }
 
@@ -366,6 +554,26 @@ function emptyCompanionSnapshot() {
 }
 
 /**
+ * Read a lifecycle state with backward compatibility for pre-lifecycle documents.
+ * @param {object} domain - persisted course document.
+ * @returns {'active' | 'paused' | 'completed'} normalized state.
+ */
+export function courseState(domain) {
+  const state = domain.lifecycle?.state
+  return state === 'paused' || state === 'completed' ? state : 'active'
+}
+
+/**
+ * Consider a curriculum complete once every skill reaches stable 80% mastery.
+ * @param {object} domain - persisted course document.
+ * @returns {boolean} whether the course can be archived without confirmation.
+ */
+export function isCourseComplete(domain) {
+  const nodes = Object.values(domain.nodes ?? {})
+  return nodes.length > 0 && nodes.every(node => node.mastery >= 80)
+}
+
+/**
  * Build a fresh, empty domain document.
  * @param {string} title - the human domain title.
  * @returns {object} a new domain document.
@@ -378,6 +586,12 @@ export function newDomain(title) {
     title: title.trim(),
     createdAt: now,
     updatedAt: now,
+    lifecycle: {
+      state: 'active',
+      pausedAt: null,
+      completedAt: null,
+      resumedAt: null,
+    },
     nodes: {},
     resources: [],
     drills: [],

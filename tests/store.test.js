@@ -110,6 +110,35 @@ test('companion long poll resolves after a successful store write', async (t) =>
   assert.notEqual(changed.revision, revision)
 })
 
+test('a completed active course is archived automatically when a new course starts', async (t) => {
+  const store = await temporaryStore(t)
+  const first = newDomain('First')
+  first.nodes.done = newNode({ id: 'done', title: 'Done', leverage: 100 })
+  first.nodes.done.mastery = 80
+  await store.save(first)
+
+  const second = newDomain('Second')
+  second.nodes.start = newNode({ id: 'start', title: 'Start', leverage: 100 })
+  await store.startCourse(second)
+
+  assert.equal((await store.load('first')).lifecycle.state, 'completed')
+  assert.equal((await store.require('Second')).lifecycle.state, 'active')
+  const states = Object.fromEntries((await store.listCourses()).map(course => [course.id, course.state]))
+  assert.deepEqual(states, { second: 'active', first: 'completed' })
+})
+
+test('companion drops a stale active id after another Host pauses the course', async (t) => {
+  const first = await temporaryStore(t)
+  const otherHost = new LearnStore(first.dir)
+  await first.save(newDomain('Old'))
+  assert.equal((await first.companionSnapshot()).domainId, 'old')
+
+  await otherHost.startCourse(newDomain('New'), 'pause')
+
+  assert.equal((await first.companionSnapshot()).domainId, 'new')
+  assert.equal((await first.load('old')).lifecycle.state, 'paused')
+})
+
 test('curriculum validation normalizes valid input', () => {
   const nodes = validateCurriculum('Rust ownership', [
     { id: 'ownership', title: ' Ownership ', leverage: 100 },

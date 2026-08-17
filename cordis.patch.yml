@@ -4,7 +4,7 @@
 # replace its whole config.
 #
 # The plugin registers model-facing learn_* tools, persists per-domain state,
-# and contributes a dsh.client sidebar companion (pixel cat + knowledge plant)
+# and contributes a draggable dsh.client companion (pixel cat + knowledge plant)
 # over the Web Connection's trusted RPC transport.
 
 - insert:

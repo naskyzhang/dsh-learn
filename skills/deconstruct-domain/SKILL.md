@@ -9,11 +9,12 @@ Turn a fuzzy domain into a small, ordered skill tree where the highest-leverage 
 
 ## Process
 
-1. **Define the target.** Ask what success looks like concretely (a task they want to do, not "know everything"). A sharp target shrinks the tree.
-2. **List candidate sub-skills.** Brainstorm 10–25 elements, then aggregate near-duplicates. Prefer skills phrased as capabilities ("trace a borrow-check error"), not topics ("ownership").
-3. **Score leverage (0–100).** For each node, estimate how much of the target it unlocks. The Pareto test: *if the learner only had 3–5 of these, which would carry most of the result?* Those get 80–100.
-4. **Wire prerequisites.** Set `deps` so a skill only unlocks after its foundations. Keep the graph shallow — deep chains stall practice.
-5. **Save.** Call `learn_curriculum` with `{ domain, nodes: [{ id, title, leverage, deps?, parent? }] }`.
+1. **Check course lifecycle.** Call `learn_course` with `action: "list"`. If another unfinished course is active, ask whether to pause it (retain progress) or end it (permanently delete it). Do not build the new curriculum until the user chooses.
+2. **Define the target.** Ask what success looks like concretely (a task they want to do, not "know everything"). A sharp target shrinks the tree.
+3. **List candidate sub-skills.** Brainstorm 10–25 elements, then aggregate near-duplicates. Prefer skills phrased as capabilities ("trace a borrow-check error"), not topics ("ownership").
+4. **Score leverage (0–100).** For each node, estimate how much of the target it unlocks. The Pareto test: *if the learner only had 3–5 of these, which would carry most of the result?* Those get 80–100.
+5. **Wire prerequisites.** Set `deps` so a skill only unlocks after its foundations. Keep the graph shallow — deep chains stall practice.
+6. **Save.** Call `learn_curriculum` with `{ domain, nodes, previousCourseAction? }`, passing `"pause"` or `"end"` only when it matches the user's explicit answer.
 
 ## Quality bar
 

@@ -1,4 +1,4 @@
-/** Browser half: mount the passive learning companion into DSH's sidebar. */
+/** Browser half: mount the draggable learning companion into DSH's shell overlay. */
 
 import { LearnCompanion, type LearnCompanionInjected } from './LearnCompanion.tsx'
 import { LearnCompanionController } from './controller.ts'
@@ -8,15 +8,15 @@ import { companionStyles } from './styles.ts'
 export const inject = ['slots', 'connection']
 
 /**
- * Register the companion only while the sidebar's additive footer slot exists.
+ * Register the companion only while the shell's additive overlay slot exists.
  * @param ctx - DSH browser context carrying slots and Connection.
  */
 export function apply(ctx: ClientContext): void {
   const controller = new LearnCompanionController(ctx.connection)
   ctx.effect(() => controller.start(), 'dsh-learn: companion state bridge')
   ctx.effect(insertStyles, 'dsh-learn: companion styles')
-  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-    name: 'sidebar.footer.action',
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
     id: 'dsh-learn-companion',
     inject: (): LearnCompanionInjected => ({
       hooks: { companion: controller },

@@ -5,3 +5,8 @@ lib/*
 *.log
 .DS_Store
 .env
+.env.*
+coverage/
+*.tgz
+*.tmp
+*.tsbuildinfo

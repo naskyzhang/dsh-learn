@@ -105,3 +105,52 @@ test('parallel attempt tools preserve every attempt and XP award', async (t) => 
   assert.equal(saved.attempts.length, 20)
   assert.equal(saved.profile.xp, 340)
 })
+
+test('switching unfinished courses requires pause or end, and paused work can resume', async (t) => {
+  const { store, execute } = await fixture(t)
+  const nextCurriculum = {
+    domain: 'Next topic',
+    nodes: [{ id: 'start', title: 'Start', leverage: 100 }],
+  }
+
+  await assert.rejects(
+    execute('learn_curriculum', nextCurriculum),
+    /ask the user whether to pause or end unfinished course "Testing"/,
+  )
+  assert.equal(await store.load('next-topic'), null)
+  assert.equal((await store.require('Testing')).lifecycle.state, 'active')
+
+  await execute('learn_curriculum', {
+    ...nextCurriculum,
+    previousCourseAction: 'pause',
+  })
+  assert.equal((await store.load('testing')).lifecycle.state, 'paused')
+  assert.equal((await store.require('Next topic')).lifecycle.state, 'active')
+  await assert.rejects(store.require('Testing'), /is paused; resume it/)
+
+  await assert.rejects(
+    execute('learn_course', { action: 'resume', domain: 'Testing' }),
+    /ask the user whether to pause or end unfinished course "Next topic"/,
+  )
+  await execute('learn_course', {
+    action: 'resume',
+    domain: 'Testing',
+    previousCourseAction: 'end',
+  })
+  assert.equal(await store.load('next-topic'), null)
+  assert.equal((await store.require('Testing')).lifecycle.state, 'active')
+})
+
+test('ending a course requires confirmation and deletes its library file', async (t) => {
+  const { store, execute } = await fixture(t)
+
+  await assert.rejects(
+    execute('learn_course', { action: 'end', domain: 'Testing' }),
+    /ask the user first/,
+  )
+  assert.notEqual(await store.load('testing'), null)
+
+  await execute('learn_course', { action: 'end', domain: 'Testing', confirmed: true })
+  assert.equal(await store.load('testing'), null)
+  assert.equal(store.activeDomain, null)
+})
