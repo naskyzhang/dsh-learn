@@ -1,0 +1,363 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
+import type { ObservableSnapshot, SnapshotSelectorHook } from './runtime-types.ts'
+
+/** Compact state transferred from the Host learning store. */
+export interface LearnCompanionSnapshot {
+  readonly domainId: string | null
+  readonly domainTitle: string | null
+  readonly xp: number
+  readonly level: number
+  readonly levelProgress: number
+  readonly streak: number
+  readonly dueCount: number
+  readonly revision: string
+}
+
+/** Private reactive state contributed by the browser plugin registration. */
+export interface LearnCompanionInjected {
+  hooks: {
+    companion: ObservableSnapshot<LearnCompanionSnapshot>
+  }
+}
+
+export interface LearnCompanionProps {
+  readonly useCompanion: SnapshotSelectorHook<LearnCompanionSnapshot>
+}
+
+const STAGE_NAMES = ['种子', '嫩芽', '叶丛', '花苞', '开花'] as const
+const POSITION_KEY = 'dsh-learn.companion-position.v1'
+const DETAIL_WIDTH = 224
+const EXPANDED_HEIGHT = 136
+const VIEWPORT_MARGIN = 12
+const ADVENTURE_DURATION = 14_000
+const MEOW_DURATION = 3_600
+
+type CatAction = 'adventure' | 'meow'
+
+interface Position {
+  x: number
+  y: number
+}
+
+interface DragState {
+  pointerId: number
+  originX: number
+  originY: number
+  start: Position
+}
+
+/**
+ * Render a draggable pixel cat and knowledge plant in the shell overlay.
+ * @param props - framework-bound companion selector.
+ * @returns compact floating learning status.
+ */
+export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
+  const snapshot = useCompanion(value => value)
+  const previousXp = useRef<number | null>(null)
+  const drag = useRef<DragState | null>(null)
+  const moved = useRef(false)
+  const actionTimer = useRef<number | null>(null)
+  const positionRef = useRef<Position>(initialPosition())
+  const [position, setPosition] = useState(positionRef.current)
+  const [dragging, setDragging] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [catAction, setCatAction] = useState<CatAction | null>(null)
+  const [reward, setReward] = useState(false)
+  const stage = Math.min(5, Math.max(1, snapshot.level))
+  const sleeping = catAction === null
+
+  const moveTo = useCallback((next: Position) => {
+    const bounded = clampPosition(next)
+    positionRef.current = bounded
+    setPosition(bounded)
+    return bounded
+  }, [])
+
+  const startCatAction = useCallback((action: CatAction) => {
+    if (actionTimer.current !== null) window.clearTimeout(actionTimer.current)
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    setCatAction(action)
+    actionTimer.current = window.setTimeout(() => {
+      actionTimer.current = null
+      setCatAction(null)
+    }, reducedMotion ? 800 : action === 'adventure' ? ADVENTURE_DURATION : MEOW_DURATION)
+  }, [])
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    drag.current = {
+      pointerId: event.pointerId,
+      originX: event.clientX,
+      originY: event.clientY,
+      start: positionRef.current,
+    }
+    moved.current = false
+    setDragging(true)
+  }, [])
+
+  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = drag.current
+    if (current === null || current.pointerId !== event.pointerId) return
+    const dx = event.clientX - current.originX
+    const dy = event.clientY - current.originY
+    if (!moved.current && Math.hypot(dx, dy) < 5) return
+    moved.current = true
+    moveTo({
+      x: current.start.x + dx,
+      y: current.start.y + dy,
+    })
+  }, [moveTo])
+
+  const finishDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const current = drag.current
+    if (current === null || current.pointerId !== event.pointerId) return
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    drag.current = null
+    setDragging(false)
+    if (moved.current) savePosition(positionRef.current)
+    else {
+      const nextExpanded = !expanded
+      setExpanded(nextExpanded)
+      startCatAction(nextExpanded ? 'adventure' : 'meow')
+    }
+  }, [expanded, startCatAction])
+
+  const cancelDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (drag.current?.pointerId !== event.pointerId) return
+    drag.current = null
+    moved.current = false
+    setDragging(false)
+  }, [])
+
+  const onHandleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      const nextExpanded = !expanded
+      setExpanded(nextExpanded)
+      startCatAction(nextExpanded ? 'adventure' : 'meow')
+      return
+    }
+    const step = event.shiftKey ? 32 : 12
+    const delta = {
+      ArrowLeft: { x: -step, y: 0 },
+      ArrowRight: { x: step, y: 0 },
+      ArrowUp: { x: 0, y: -step },
+      ArrowDown: { x: 0, y: step },
+    }[event.key]
+    if (delta === undefined) return
+    event.preventDefault()
+    const current = positionRef.current
+    const next = moveTo({ x: current.x + delta.x, y: current.y + delta.y })
+    savePosition(next)
+  }, [expanded, moveTo, startCatAction])
+
+  useEffect(() => {
+    const previous = previousXp.current
+    previousXp.current = snapshot.xp
+    if (previous === null || snapshot.xp <= previous) return
+    setReward(true)
+    const timer = window.setTimeout(() => { setReward(false) }, 500)
+    return () => { window.clearTimeout(timer) }
+  }, [snapshot.xp])
+
+  useEffect(() => {
+    const onResize = () => {
+      const next = moveTo(positionRef.current)
+      savePosition(next)
+    }
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize) }
+  }, [moveTo])
+
+  useEffect(() => () => {
+    if (actionTimer.current !== null) window.clearTimeout(actionTimer.current)
+  }, [])
+
+  const growth = String(0.94 + snapshot.levelProgress * 0.0006)
+  const plantStyle = { '--plant-growth': growth } as CSSProperties
+  const floatStyle = {
+    transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
+  } as CSSProperties
+  const title = snapshot.domainTitle ?? '学习伙伴休息中'
+  const meta = snapshot.domainId === null
+    ? '创建课程后植物会发芽'
+    : `${STAGE_NAMES[stage - 1]} · ${snapshot.levelProgress}% · ${snapshot.dueCount} 项待复习`
+
+  return (
+    <div className="dsh-learn-float" style={floatStyle}>
+      <div
+        className="dsh-learn-companion"
+        data-dragging={String(dragging)}
+        data-expanded={String(expanded)}
+        data-reward={String(reward)}
+      >
+        <div
+          className="dsh-learn-scene"
+          role="button"
+          tabIndex={0}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? '收起' : '展开'}学习伙伴详情并唤醒小猫；拖动可移动；${title}，${meta}`}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={finishDrag}
+          onPointerCancel={cancelDrag}
+          onKeyDown={onHandleKeyDown}
+        >
+          <div
+            className="dsh-learn-cat"
+            data-sleeping={String(sleeping)}
+            data-action={catAction ?? 'sleeping'}
+            aria-hidden="true"
+          >
+            <svg
+              className="dsh-learn-cat-sprite dsh-learn-cat-walking"
+              viewBox="0 0 72 48"
+              shapeRendering="crispEdges"
+            >
+              <path className="dsh-learn-cat-fill" d="M18 20H46V22H53V38H48V42H19V39H15V25H18Z" />
+              <path className="dsh-learn-cat-fill dsh-learn-cat-head-fill" d="M5 16V9H9V12H19V9H23V15H27V30H24V33H8V30H5Z" />
+              <path className="dsh-learn-cat-fill" d="M52 20H58V10H63V5H68V14H63V25H58V32H52Z" />
+              <path className="dsh-learn-cat-inner-ear-fill" d="M8 10H11V14H8ZM19 10H22V14H19Z" />
+              <path className="dsh-learn-cat-light-fill" d="M6 24H17V31H8V29H4V26H6Z" />
+              <rect className="dsh-learn-cat-eye-fill" x="10" y="18" width="3" height="4" />
+              <rect className="dsh-learn-cat-eye-shine-fill" x="10" y="18" width="1" height="1" />
+              <rect className="dsh-learn-cat-meow-squint-fill dsh-learn-cat-meow-squint-walking" x="9" y="20" width="6" height="2" />
+              <rect className="dsh-learn-cat-pink-fill" x="4" y="24" width="3" height="3" />
+              <rect className="dsh-learn-cat-cheek-fill" x="13" y="25" width="3" height="3" />
+              <rect className="dsh-learn-cat-smile-fill" x="7" y="29" width="4" height="2" />
+              <path className="dsh-learn-cat-meow-mouth-fill" d="M8 23H15V25H17V30H15V32H8V30H6V25H8Z" />
+              <path className="dsh-learn-cat-meow-tongue-fill" d="M9 27H14V29H15V31H8V29H9Z" />
+              <rect className="dsh-learn-cat-meow-blush-fill" x="16" y="25" width="4" height="3" />
+              <rect className="dsh-learn-cat-collar-fill" x="24" y="27" width="5" height="8" />
+              <rect className="dsh-learn-cat-stripe-fill" x="25" y="19" width="4" height="8" />
+              <rect className="dsh-learn-cat-stripe-fill" x="34" y="19" width="4" height="6" />
+              <path className="dsh-learn-cat-leg dsh-learn-cat-leg-front" d="M20 36H28V45H19V41H20Z" />
+              <path className="dsh-learn-cat-leg dsh-learn-cat-leg-back" d="M42 36H50V45H41V41H42Z" />
+              <rect className="dsh-learn-cat-paw-tip-fill" x="20" y="41" width="7" height="3" />
+              <rect className="dsh-learn-cat-paw-tip-fill" x="42" y="41" width="7" height="3" />
+              <rect className="dsh-learn-cat-whisker-fill" x="0" y="28" width="8" height="2" />
+              <rect className="dsh-learn-cat-whisker-fill" x="1" y="32" width="9" height="2" />
+            </svg>
+            <svg
+              className="dsh-learn-cat-sprite dsh-learn-cat-sleeping"
+              viewBox="0 0 72 48"
+              shapeRendering="crispEdges"
+            >
+              <path className="dsh-learn-cat-fill" d="M18 22H48V25H55V40H51V44H18V41H13V29H18Z" />
+              <path className="dsh-learn-cat-fill dsh-learn-cat-prone-head-fill" d="M5 24V15H10V19H21V15H26V24H30V41H26V44H8V41H4V28H5Z" />
+              <path className="dsh-learn-cat-tail-fill" d="M51 25H60V29H65V38H61V42H48V37H58V32H51Z" />
+              <path className="dsh-learn-cat-light-fill" d="M6 34H25V41H9V39H5Z" />
+              <rect className="dsh-learn-cat-sleep-eye-fill" x="9" y="29" width="6" height="2" />
+              <rect className="dsh-learn-cat-sleep-eye-fill" x="20" y="29" width="6" height="2" />
+              <rect className="dsh-learn-cat-prone-eye-fill" x="10" y="27" width="4" height="5" />
+              <rect className="dsh-learn-cat-prone-eye-fill" x="21" y="27" width="4" height="5" />
+              <rect className="dsh-learn-cat-meow-squint-fill dsh-learn-cat-meow-squint-prone" x="9" y="29" width="6" height="2" />
+              <rect className="dsh-learn-cat-meow-squint-fill dsh-learn-cat-meow-squint-prone" x="20" y="29" width="6" height="2" />
+              <rect className="dsh-learn-cat-pink-fill" x="15" y="33" width="4" height="3" />
+              <path className="dsh-learn-cat-meow-mouth-fill" d="M12 33H23V35H25V40H23V42H12V40H10V35H12Z" />
+              <path className="dsh-learn-cat-meow-tongue-fill" d="M14 37H21V39H22V41H13V39H14Z" />
+              <rect className="dsh-learn-cat-meow-blush-fill" x="5" y="34" width="4" height="3" />
+              <rect className="dsh-learn-cat-meow-blush-fill" x="26" y="34" width="4" height="3" />
+              <rect className="dsh-learn-cat-stripe-fill" x="34" y="22" width="4" height="7" />
+              <rect className="dsh-learn-cat-stripe-fill" x="43" y="23" width="4" height="6" />
+              <path className="dsh-learn-cat-light-fill" d="M23 38H42V44H22V41H23Z" />
+            </svg>
+            <span className="dsh-learn-zzz" aria-hidden="true">
+              <span>Z</span><span>Z</span><span>Z</span>
+            </span>
+            <span className="dsh-learn-meow-text" aria-hidden="true">Miao~</span>
+          </div>
+          <div
+            className="dsh-learn-plant"
+            data-stage={String(stage)}
+            style={plantStyle}
+            aria-hidden="true"
+          >
+            <svg className="dsh-learn-plant-sprite" viewBox="0 0 56 64" shapeRendering="crispEdges">
+              <path className="dsh-learn-plant-stem" d="M25 17H31V43H25Z" />
+              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-left" d="M25 34H18V31H9V22H18V25H25Z" />
+              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-right" d="M31 27H37V23H47V14H38V17H31Z" />
+              <path className="dsh-learn-plant-leaf dsh-learn-plant-leaf-upper" d="M25 21H19V17H14V9H22V12H28Z" />
+              <g className="dsh-learn-plant-bud">
+                <path d="M21 12V6H24V3H32V6H35V12H32V16H24V12Z" />
+                <rect x="25" y="7" width="6" height="6" />
+              </g>
+              <g className="dsh-learn-plant-bloom">
+                <rect x="24" y="1" width="8" height="8" />
+                <rect x="17" y="7" width="8" height="8" />
+                <rect x="31" y="7" width="8" height="8" />
+                <rect x="24" y="13" width="8" height="8" />
+                <rect className="dsh-learn-plant-bloom-center" x="24" y="7" width="8" height="8" />
+              </g>
+              <rect className="dsh-learn-pot-soil" x="10" y="39" width="36" height="7" />
+              <path className="dsh-learn-pot-body" d="M12 44H44L40 61H16Z" />
+              <rect className="dsh-learn-pot-rim" x="8" y="39" width="40" height="10" />
+              <rect className="dsh-learn-pot-highlight" x="13" y="42" width="7" height="4" />
+              <path className="dsh-learn-pot-motif" d="M25 49H31V52H34V56H31V59H25V56H22V52H25Z" />
+            </svg>
+          </div>
+        </div>
+        {expanded && (
+          <div className="dsh-learn-details" role="status" aria-live="polite">
+            <div className="dsh-learn-title">{title}</div>
+            <div className="dsh-learn-meta">{meta}</div>
+            <div className="dsh-learn-stats">
+              <span>LV.{snapshot.level}</span>
+              <span>{snapshot.xp} XP</span>
+              <span>🔥 {snapshot.streak}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function initialPosition(): Position {
+  const fallback = defaultPosition()
+  try {
+    const raw = window.localStorage.getItem(POSITION_KEY)
+    if (raw === null) return fallback
+    const parsed = JSON.parse(raw) as Partial<Position>
+    if (!Number.isFinite(parsed.x) || !Number.isFinite(parsed.y)) return fallback
+    return clampPosition({ x: parsed.x as number, y: parsed.y as number })
+  } catch {
+    return fallback
+  }
+}
+
+function defaultPosition(): Position {
+  return clampPosition({
+    x: window.innerWidth - DETAIL_WIDTH - 28,
+    y: Math.round(window.innerHeight * 0.58),
+  })
+}
+
+function clampPosition(position: Position): Position {
+  const width = Math.min(DETAIL_WIDTH, Math.max(0, window.innerWidth - VIEWPORT_MARGIN * 2))
+  const maxX = Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN)
+  const maxY = Math.max(VIEWPORT_MARGIN, window.innerHeight - EXPANDED_HEIGHT - VIEWPORT_MARGIN)
+  return {
+    x: Math.min(maxX, Math.max(VIEWPORT_MARGIN, Math.round(position.x))),
+    y: Math.min(maxY, Math.max(VIEWPORT_MARGIN, Math.round(position.y))),
+  }
+}
+
+function savePosition(position: Position): void {
+  try {
+    window.localStorage.setItem(POSITION_KEY, JSON.stringify(position))
+  } catch {
+    // Position persistence is optional; the learning state never lives here.
+  }
+}

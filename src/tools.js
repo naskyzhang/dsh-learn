@@ -10,12 +10,17 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   applyGrade,
+  assertText,
   awardProgress,
   dueCount,
   makeId,
   newDomain,
   newNode,
   selectPractice,
+  validateCurriculum,
+  validateGrade,
+  validateNodeReferences,
+  validatePercentage,
 } from './store.js'
 
 /**
@@ -26,6 +31,7 @@ import {
  */
 export function buildTools(store, pacing) {
   return [
+    courseTool(store),
     curriculumTool(store),
     addResourceTool(store),
     nextPracticeTool(store, pacing),
@@ -36,6 +42,60 @@ export function buildTools(store, pacing) {
   ]
 }
 
+/** Course lifecycle — list, resume, or permanently end retained courses. */
+function courseTool(store) {
+  return defineTool({
+    name: 'learn_course',
+    description:
+      'Manage the single active learning course. Use action "list" to inspect active/paused/completed '
+      + 'courses, "resume" to continue a retained course, or "end" to permanently delete one. '
+      + 'Before resume can replace unfinished active work, ask the user whether to pause or end it.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['list', 'resume', 'end'], description: 'Lifecycle operation.' },
+      domain: { type: 'string', description: 'Required for resume/end: course title or id.' },
+      previousCourseAction: {
+        type: 'string',
+        enum: ['pause', 'end'],
+        description: 'For resume only: the user-confirmed decision for another unfinished active course.',
+      },
+      confirmed: {
+        type: 'boolean',
+        description: 'For end only: must be true after the user explicitly confirms permanent deletion.',
+      },
+    },
+    output: outputText(),
+    async execute(args) {
+      if (args.action === 'list') {
+        const courses = await store.listCourses()
+        if (courses.length === 0) return text('No learning courses in the library.')
+        const lines = courses.map(course => (
+          `- ${course.title} (id: ${course.id}, state: ${course.state}, `
+          + `mastery complete: ${course.complete ? 'yes' : 'no'}, level ${course.level}, ${course.xp} XP)`
+        ))
+        return text(`Learning courses:\n${lines.join('\n')}`)
+      }
+      const domain = assertText('domain', args.domain, 200)
+      if (args.action === 'resume') {
+        const result = await store.resumeCourse(domain, args.previousCourseAction)
+        return text(
+          result.resumed
+            ? `Resumed "${result.domainTitle}".${formatTransitions(result.previous)}`
+            : `"${result.domainTitle}" is already the active course.`,
+        )
+      }
+      if (args.action === 'end') {
+        if (args.confirmed !== true) {
+          throw new Error('ending a course permanently deletes its library file; ask the user first, then retry with confirmed true')
+        }
+        const ended = await store.endCourse(domain)
+        return text(`Ended "${ended.title}" and permanently deleted it from the learning library.`)
+      }
+      throw new Error(`invalid action '${args.action}'`)
+    },
+    presentCall: args => ({ card: 'generic', title: `Course: ${args.action}`, kind: 'other', rawInput: args }),
+  })
+}
+
 /** Step 1 — deconstruct: create or replace a domain's Pareto skill tree. */
 function curriculumTool(store) {
   return defineTool({
@@ -44,9 +104,15 @@ function curriculumTool(store) {
       'Deconstruct a domain into a skill tree and save it as the learning curriculum. '
       + 'Rank each node by `leverage` (0-100): the Pareto weight — how much of the 80% '
       + 'result this element carries. Set `deps` to prerequisite node ids so practice '
-      + 'follows learning order. Replaces any existing curriculum for the domain.',
+      + 'follows learning order. Only one course can be active. If another unfinished course '
+      + 'is active, ask the user whether to pause or end it before retrying.',
     parameters: {
       domain: { type: 'string', required: true, description: 'The domain title, e.g. "Rust ownership".' },
+      previousCourseAction: {
+        type: 'string',
+        enum: ['pause', 'end'],
+        description: 'User-confirmed decision for the previous unfinished course when switching topics.',
+      },
       nodes: {
         type: 'array',
         required: true,
@@ -66,13 +132,15 @@ function curriculumTool(store) {
     },
     output: outputText(),
     async execute(args) {
+      const specs = validateCurriculum(args.domain, args.nodes)
       const domain = newDomain(args.domain)
-      for (const spec of args.nodes) domain.nodes[spec.id] = newNode(spec)
-      await store.save(domain)
-      const top = args.nodes.slice().sort((a, b) => b.leverage - a.leverage).slice(0, 3)
+      for (const spec of specs) domain.nodes[spec.id] = newNode(spec)
+      const transition = await store.startCourse(domain, args.previousCourseAction)
+      const top = specs.slice().sort((a, b) => b.leverage - a.leverage).slice(0, 3)
         .map(n => `${n.title} (${n.leverage})`).join(', ')
       return text(
-        `Saved curriculum for "${domain.title}" with ${args.nodes.length} skills. `
+        `Saved curriculum for "${domain.title}" with ${specs.length} skills. `
+        + `${formatTransitions(transition.previous)}`
         + `Highest-leverage first: ${top}. Tip: render the tree with the drawio-skill, `
         + `then call learn_next_practice to start.`,
       )
@@ -100,20 +168,26 @@ function addResourceTool(store) {
     },
     output: outputText(),
     async execute(args) {
-      const domain = await store.require(args.domain)
-      const resource = {
-        id: makeId('res'),
-        author: args.author,
-        title: args.title,
-        url: args.url,
-        type: args.type,
-        summary: args.summary ?? '',
-        nodeIds: args.nodeIds ?? [],
-        addedAt: new Date().toISOString(),
-      }
-      domain.resources.push(resource)
-      await store.save(domain)
-      return text(`Added ${args.type} "${args.title}" by ${args.author} (${domain.resources.length} resources total).`)
+      const author = assertText('author', args.author, 200)
+      const title = assertText('title', args.title, 300)
+      const url = validateUrl(args.url)
+      const summary = args.summary === undefined ? '' : assertText('summary', args.summary, 4000)
+      const result = await store.update(args.domain, (domain) => {
+        const nodeIds = validateNodeReferences(domain, args.nodeIds ?? [], 'nodeIds', { allowEmpty: true })
+        const resource = {
+          id: makeId('res'),
+          author,
+          title,
+          url,
+          type: args.type,
+          summary,
+          nodeIds,
+          addedAt: new Date().toISOString(),
+        }
+        domain.resources.push(resource)
+        return { total: domain.resources.length, domainTitle: domain.title }
+      })
+      return text(`Added ${args.type} "${title}" by ${author} (${result.total} resources total in "${result.domainTitle}").`)
     },
     presentCall: args => ({ card: 'generic', title: `Add resource: ${args.title}`, kind: 'other', rawInput: args }),
   })
@@ -135,7 +209,11 @@ function nextPracticeTool(store, pacing) {
     output: outputText(),
     async execute(args) {
       const domain = await store.require(args.domain)
-      const count = Math.min(args.count ?? pacing.newSkillsPerDay, pacing.dailyReviewLimit)
+      const requested = args.count ?? pacing.newSkillsPerDay
+      if (!Number.isInteger(requested) || requested < 1) {
+        throw new Error('invalid count: must be a positive integer')
+      }
+      const count = Math.min(requested, pacing.dailyReviewLimit)
       const picks = selectPractice(domain, count)
       if (picks.length === 0) return text(`No skills to practice in "${domain.title}" yet — add a curriculum first.`)
       const lines = picks.map(n => {
@@ -165,12 +243,15 @@ function generateDrillTool(store) {
     },
     output: outputText(),
     async execute(args) {
-      const domain = await store.require(args.domain)
-      if (!domain.nodes[args.nodeId]) throw new Error(`unknown skill node '${args.nodeId}' in "${domain.title}"`)
-      const drill = { id: makeId('drill'), nodeId: args.nodeId, type: args.type, prompt: args.prompt, answer: args.answer, createdAt: new Date().toISOString() }
-      domain.drills.push(drill)
-      await store.save(domain)
-      return text(`Saved ${args.type} drill ${drill.id} for "${domain.nodes[args.nodeId].title}".`)
+      const prompt = assertText('prompt', args.prompt, 10000)
+      const answer = assertText('answer', args.answer, 20000)
+      const result = await store.update(args.domain, (domain) => {
+        const [nodeId] = validateNodeReferences(domain, [args.nodeId], 'nodeId')
+        const drill = { id: makeId('drill'), nodeId, type: args.type, prompt, answer, createdAt: new Date().toISOString() }
+        domain.drills.push(drill)
+        return { drillId: drill.id, nodeTitle: domain.nodes[nodeId].title }
+      })
+      return text(`Saved ${args.type} drill ${result.drillId} for "${result.nodeTitle}".`)
     },
     presentCall: args => ({ card: 'generic', title: `New drill: ${args.nodeId}`, kind: 'other', rawInput: args }),
   })
@@ -193,17 +274,31 @@ function logAttemptTool(store) {
     },
     output: outputText(),
     async execute(args) {
-      const domain = await store.require(args.domain)
-      const node = domain.nodes[args.nodeId]
-      if (!node) throw new Error(`unknown skill node '${args.nodeId}' in "${domain.title}"`)
-      applyGrade(node, args.grade)
-      const gain = awardProgress(domain, args.grade)
-      domain.attempts.push({ id: makeId('att'), nodeId: args.nodeId, drillId: args.drillId ?? null, grade: args.grade, note: args.note ?? '', ts: new Date().toISOString() })
-      await store.save(domain)
-      const levelMsg = gain.leveledUp ? ` Level up -> ${domain.profile.level}!` : ''
+      const grade = validateGrade(args.grade)
+      const note = args.note === undefined ? '' : assertText('note', args.note, 4000)
+      const result = await store.update(args.domain, (domain) => {
+        const [nodeId] = validateNodeReferences(domain, [args.nodeId], 'nodeId')
+        const node = domain.nodes[nodeId]
+        if (args.drillId !== undefined) {
+          const drill = domain.drills.find(item => item.id === args.drillId)
+          if (!drill) throw new Error(`invalid drillId: unknown drill '${args.drillId}'`)
+          if (drill.nodeId !== nodeId) throw new Error(`invalid drillId: drill '${args.drillId}' belongs to node '${drill.nodeId}'`)
+        }
+        applyGrade(node, grade)
+        const gain = awardProgress(domain, grade)
+        domain.attempts.push({ id: makeId('att'), nodeId, drillId: args.drillId ?? null, grade, note, ts: new Date().toISOString() })
+        return {
+          gain,
+          level: domain.profile.level,
+          mastery: node.mastery,
+          intervalDays: node.intervalDays,
+          nodeTitle: node.title,
+        }
+      })
+      const levelMsg = result.gain.leveledUp ? ` Level up -> ${result.level}!` : ''
       return text(
-        `Logged grade ${args.grade} for "${node.title}". Mastery ${node.mastery}/100, `
-        + `next review in ${node.intervalDays}d. +${gain.xpGained} XP, streak ${gain.streak}.${levelMsg}`,
+        `Logged grade ${grade} for "${result.nodeTitle}". Mastery ${result.mastery}/100, `
+        + `next review in ${result.intervalDays}d. +${result.gain.xpGained} XP, streak ${result.gain.streak}.${levelMsg}`,
       )
     },
     presentCall: args => ({ card: 'generic', title: `Grade: ${args.nodeId} (${args.grade}/5)`, kind: 'other', rawInput: args }),
@@ -237,18 +332,26 @@ function reviewTool(store) {
     },
     output: outputText(),
     async execute(args) {
-      const domain = await store.require(args.domain)
-      const applied = []
-      for (const adj of args.adjustments ?? []) {
-        const node = domain.nodes[adj.nodeId]
-        if (!node) continue
-        if (typeof adj.leverage === 'number') node.leverage = clampInt(adj.leverage)
-        if (typeof adj.mastery === 'number') node.mastery = clampInt(adj.mastery)
-        applied.push(adj.nodeId)
+      const summary = assertText('summary', args.summary, 10000)
+      const adjustments = args.adjustments ?? []
+      const nodeIds = adjustments.map(adj => adj.nodeId)
+      if (new Set(nodeIds).size !== nodeIds.length) {
+        throw new Error('invalid adjustments: each skill node may be adjusted only once')
       }
-      domain.reviews.push({ id: makeId('rev'), summary: args.summary, adjustments: args.adjustments ?? [], ts: new Date().toISOString() })
-      await store.save(domain)
-      return text(`Logged retrospective for "${domain.title}"; adjusted ${applied.length} skill(s). Ready for the next cycle.`)
+      const result = await store.update(args.domain, (domain) => {
+        validateNodeReferences(domain, nodeIds, 'adjustments.nodeId', { allowEmpty: true })
+        for (const [index, adj] of adjustments.entries()) {
+          if (adj.leverage === undefined && adj.mastery === undefined) {
+            throw new Error(`invalid adjustments[${index}]: provide leverage or mastery`)
+          }
+          const node = domain.nodes[adj.nodeId]
+          if (adj.leverage !== undefined) node.leverage = validatePercentage(`adjustments[${index}].leverage`, adj.leverage)
+          if (adj.mastery !== undefined) node.mastery = validatePercentage(`adjustments[${index}].mastery`, adj.mastery)
+        }
+        domain.reviews.push({ id: makeId('rev'), summary, adjustments, ts: new Date().toISOString() })
+        return { domainTitle: domain.title, applied: adjustments.length }
+      })
+      return text(`Logged retrospective for "${result.domainTitle}"; adjusted ${result.applied} skill(s). Ready for the next cycle.`)
     },
     presentCall: args => ({ card: 'generic', title: 'Retrospective', kind: 'other', rawInput: args }),
   })
@@ -281,6 +384,17 @@ function statusTool(store) {
 }
 
 /**
+ * Render lifecycle changes performed while activating a course.
+ * @param {object[]} previous - transition records from the store.
+ * @returns {string} sentence fragment, including trailing whitespace.
+ */
+function formatTransitions(previous) {
+  if (!previous || previous.length === 0) return ''
+  const changes = previous.map(item => `${item.action} "${item.title}"`).join(', ')
+  return `Previous course: ${changes}. `
+}
+
+/**
  * Shared `output` descriptor: a single `text` string rendered verbatim to the
  * model. `render` is a sibling of `schema`, matching the tool-definition contract.
  * @returns {object} the tool `output` descriptor (schema + render).
@@ -306,10 +420,20 @@ function text(message) {
 }
 
 /**
- * Clamp an integer into the 0-100 range.
- * @param {number} n - the value.
- * @returns {number} the clamped integer.
+ * Accept only absolute HTTP(S) resource URLs.
+ * @param {unknown} value - candidate URL.
+ * @returns {string} normalized URL.
  */
-function clampInt(n) {
-  return Math.min(100, Math.max(0, Math.round(n)))
+function validateUrl(value) {
+  const text = assertText('url', value, 2048)
+  let url
+  try {
+    url = new URL(text)
+  } catch {
+    throw new Error('invalid url: must be an absolute HTTP(S) URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('invalid url: only HTTP(S) URLs are allowed')
+  }
+  return url.toString()
 }

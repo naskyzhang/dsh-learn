@@ -3,9 +3,9 @@
 # profile's cordis.patch.yml or a --patch overlay) may address it by id and
 # replace its whole config.
 #
-# The plugin registers the model-facing learn_* tools on ctx.tools and persists
-# per-domain learning state (skill tree, resources, drills, attempts, SRS
-# schedule) to a JSON store outside the session log.
+# The plugin registers model-facing learn_* tools, persists per-domain state,
+# and contributes a draggable dsh.client companion (pixel cat + knowledge plant)
+# over the Web Connection's trusted RPC transport.
 
 - insert:
     - id: learn
