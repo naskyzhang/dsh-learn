@@ -14,6 +14,21 @@ import {
 } from './plant-debug.ts'
 
 /** Compact state transferred from the Host learning store. */
+export interface LearnCompanionResource {
+  readonly title: string
+  readonly url: string
+}
+
+export interface LearnCompanionNode {
+  readonly id: string
+  readonly title: string
+  readonly titleEn: string
+  readonly parent: string | null
+  readonly mastery: number
+  readonly leverage: number
+  readonly resources: readonly LearnCompanionResource[]
+}
+
 export interface LearnCompanionSnapshot {
   readonly domainId: string | null
   readonly domainTitle: string | null
@@ -22,6 +37,7 @@ export interface LearnCompanionSnapshot {
   readonly levelProgress: number
   readonly streak: number
   readonly dueCount: number
+  readonly nodes: readonly LearnCompanionNode[]
   readonly revision: string
 }
 
@@ -38,8 +54,8 @@ export interface LearnCompanionProps {
 
 const STAGE_NAMES = ['种子', '嫩芽', '叶丛', '花苞', '开花'] as const
 const POSITION_KEY = 'dsh-learn.companion-position.v1'
-const DETAIL_WIDTH = 224
-const EXPANDED_HEIGHT = 136
+const DETAIL_WIDTH = 226
+const SCENE_HEIGHT = 68
 const VIEWPORT_MARGIN = 12
 const ADVENTURE_DURATION = 14_000
 const MEOW_DURATION = 3_600
@@ -280,6 +296,25 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
     : snapshot.domainId === null
       ? '创建课程后植物会发芽'
       : `${STAGE_NAMES[stage - 1]} · ${displayProgress}% · ${snapshot.dueCount} 项待复习`
+  const skillTree = flattenSkillTree(snapshot.nodes)
+  const desiredCardHeight = Math.min(
+    260,
+    92 + skillTree.reduce((height, item) => height + 48 + Math.min(2, item.node.resources.length) * 21, 0),
+  )
+  const availableAbove = Math.max(100, position.y - VIEWPORT_MARGIN - 6)
+  const availableBelow = Math.max(
+    100,
+    window.innerHeight - position.y - SCENE_HEIGHT - VIEWPORT_MARGIN - 6,
+  )
+  const cardPlacement = availableBelow < desiredCardHeight && availableAbove > availableBelow
+    ? 'above'
+    : 'below'
+  const detailStyle = {
+    maxHeight: `${Math.min(
+      desiredCardHeight,
+      cardPlacement === 'above' ? availableAbove : availableBelow,
+    )}px`,
+  } as CSSProperties
 
   return (
     <div className="dsh-learn-float" style={floatStyle}>
@@ -426,19 +461,99 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
           </div>
         </div>
         {expanded && (
-          <div className="dsh-learn-details" role="status" aria-live="polite">
-            <div className="dsh-learn-title">{title}</div>
-            <div className="dsh-learn-meta">{meta}</div>
-            <div className="dsh-learn-stats">
-              <span>LV.{displayLevel}</span>
-              <span>{plantDebug !== null ? `${displayProgress}%` : `${snapshot.xp} XP`}</span>
-              <span>🔥 {snapshot.streak}</span>
+          <div
+            className="dsh-learn-details"
+            data-placement={cardPlacement}
+            style={detailStyle}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="dsh-learn-card-summary">
+              <div className="dsh-learn-title">{title}</div>
+              <div className="dsh-learn-meta">{meta}</div>
+              <div className="dsh-learn-stats">
+                <span>LV.{displayLevel}</span>
+                <span>{plantDebug !== null ? `${displayProgress}%` : `${snapshot.xp} XP`}</span>
+                <span>🔥 {snapshot.streak}</span>
+              </div>
             </div>
+            {skillTree.length > 0 && (
+              <section className="dsh-learn-tree" aria-label="课程技能树">
+                <div className="dsh-learn-tree-heading">
+                  <span>技能树</span>
+                  <span>{skillTree.length} 项</span>
+                </div>
+                <div className="dsh-learn-tree-list">
+                  {skillTree.map(({ node, depth }) => (
+                    <div
+                      className="dsh-learn-skill"
+                      key={node.id}
+                      style={{ marginLeft: `${depth * 10}px` }}
+                    >
+                      <div className="dsh-learn-skill-line">
+                        <span className="dsh-learn-tree-branch" aria-hidden="true">
+                          {depth === 0 ? '◆' : '└'}
+                        </span>
+                        <span className="dsh-learn-skill-names" title={`${node.title} / ${node.titleEn}`}>
+                          <span className="dsh-learn-skill-title">{displayTitle(node.title)}</span>
+                          <span className="dsh-learn-skill-title-en">{displayTitle(node.titleEn)}</span>
+                        </span>
+                        <span className="dsh-learn-skill-score">{node.mastery}%</span>
+                      </div>
+                      <div className="dsh-learn-mastery-track" aria-hidden="true">
+                        <span style={{ width: `${node.mastery}%` }} />
+                      </div>
+                      {node.resources.slice(0, 2).map(resource => (
+                        <a
+                          className="dsh-learn-resource"
+                          href={resource.url}
+                          key={resource.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={resource.url}
+                        >
+                          ↗ {resource.title}
+                        </a>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
       </div>
     </div>
   )
+}
+
+function flattenSkillTree(nodes: readonly LearnCompanionNode[]): Array<{
+  node: LearnCompanionNode
+  depth: number
+}> {
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  const children = new Map<string | null, LearnCompanionNode[]>()
+  for (const node of nodes) {
+    const parent = node.parent !== null && byId.has(node.parent) ? node.parent : null
+    const siblings = children.get(parent) ?? []
+    siblings.push(node)
+    children.set(parent, siblings)
+  }
+  const result: Array<{ node: LearnCompanionNode, depth: number }> = []
+  const visited = new Set<string>()
+  const visit = (node: LearnCompanionNode, depth: number) => {
+    if (visited.has(node.id)) return
+    visited.add(node.id)
+    result.push({ node, depth: Math.min(depth, 6) })
+    for (const child of children.get(node.id) ?? []) visit(child, depth + 1)
+  }
+  for (const root of children.get(null) ?? []) visit(root, 0)
+  for (const node of nodes) visit(node, 0)
+  return result
+}
+
+function displayTitle(title: string): string {
+  return title.split(/[:：]/, 1)[0]?.trim() || title
 }
 
 function initialPosition(): Position {
@@ -464,7 +579,7 @@ function defaultPosition(): Position {
 function clampPosition(position: Position): Position {
   const width = Math.min(DETAIL_WIDTH, Math.max(0, window.innerWidth - VIEWPORT_MARGIN * 2))
   const maxX = Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN)
-  const maxY = Math.max(VIEWPORT_MARGIN, window.innerHeight - EXPANDED_HEIGHT - VIEWPORT_MARGIN)
+  const maxY = Math.max(VIEWPORT_MARGIN, window.innerHeight - SCENE_HEIGHT - VIEWPORT_MARGIN)
   return {
     x: Math.min(maxX, Math.max(VIEWPORT_MARGIN, Math.round(position.x))),
     y: Math.min(maxY, Math.max(VIEWPORT_MARGIN, Math.round(position.y))),

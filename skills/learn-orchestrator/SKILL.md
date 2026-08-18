@@ -9,8 +9,8 @@ Run learning as a closed loop, not a lecture. The methodology has four phases; e
 
 ## The loop
 
-1. **Deconstruct** (`deconstruct-domain` skill) — break the domain into a skill tree, rank each node by Pareto leverage. Save with `learn_curriculum`.
-2. **Source** (`source-experts` skill) — find the strongest people in the field and their primary material. Save with `learn_add_resource`.
+1. **Deconstruct** (`deconstruct-domain` skill) — summarize the course for the card (`shortTitle`, ≤8 Chinese characters), break it into a bilingual skill tree, and rank each node by Pareto leverage. Save with `learn_curriculum`.
+2. **Source** (`source-experts` skill) — find the strongest people in the field and their primary material. Save with `learn_add_resource` onto specific skill nodes (`nodeIds` required).
 3. **Practice** (`practice-coach` skill) — call `learn_next_practice`, pose a gamified exercise per skill, save reusable ones with `learn_generate_drill`.
 4. **Feedback + retrospective** (`retrospective` skill) — grade each attempt immediately with `learn_log_attempt`; periodically call `learn_review` to re-weight the tree, then loop back to practice.
 

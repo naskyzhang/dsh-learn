@@ -9,6 +9,7 @@ import {
   applyGrade,
   newDomain,
   newNode,
+  validateCourseShortTitle,
   validateCurriculum,
   validateGrade,
   validateNodeReferences,
@@ -76,7 +77,12 @@ test('a failed transaction is not persisted and does not poison its queue', asyn
 test('companion snapshot restores the latest domain and derives level progress', async (t) => {
   const store = await temporaryStore(t)
   const domain = newDomain('Companion')
-  domain.nodes.basics = newNode({ id: 'basics', title: 'Basics', leverage: 100 })
+  domain.nodes.basics = newNode({
+    id: 'basics',
+    title: 'Basics',
+    leverage: 100,
+    resources: [{ title: 'Guide', url: 'https://example.com/guide' }],
+  })
   domain.profile.xp = 150
   domain.profile.level = 2
   domain.profile.streak = 3
@@ -91,6 +97,15 @@ test('companion snapshot restores the latest domain and derives level progress',
     levelProgress: 25,
     streak: 3,
     dueCount: 1,
+    nodes: [{
+      id: 'basics',
+      title: 'Basics',
+      titleEn: 'Basics',
+      parent: null,
+      mastery: 0,
+      leverage: 100,
+      resources: [{ title: 'Guide', url: 'https://example.com/guide' }],
+    }],
     revision: domain.updatedAt,
   })
 })
@@ -141,14 +156,78 @@ test('companion drops a stale active id after another Host pauses the course', a
 
 test('curriculum validation normalizes valid input', () => {
   const nodes = validateCurriculum('Rust ownership', [
-    { id: 'ownership', title: ' Ownership ', leverage: 100 },
-    { id: 'borrowing', title: 'Borrowing', parent: 'ownership', leverage: 90, deps: ['ownership'] },
+    { id: 'ownership', title: ' 所有权 ', titleEn: 'Ownership', leverage: 100 },
+    { id: 'borrowing', title: '借用', titleEn: 'Borrowing', parent: 'ownership', leverage: 90, deps: ['ownership'] },
   ])
 
   assert.deepEqual(nodes, [
-    { id: 'ownership', title: 'Ownership', parent: null, leverage: 100, deps: [] },
-    { id: 'borrowing', title: 'Borrowing', parent: 'ownership', leverage: 90, deps: ['ownership'] },
+    { id: 'ownership', title: '所有权', titleEn: 'Ownership', parent: null, leverage: 100, deps: [], resources: [] },
+    { id: 'borrowing', title: '借用', titleEn: 'Borrowing', parent: 'ownership', leverage: 90, deps: ['ownership'], resources: [] },
   ])
+})
+
+test('curriculum validation requires Chinese titles to stay within eight characters', () => {
+  assert.throws(
+    () => validateCurriculum('X', [
+      { id: 'long', title: '验证器与评分器设计', titleEn: 'Verifier Design', leverage: 80 },
+    ]),
+    /at most 8 characters; summarize the skill/,
+  )
+})
+
+test('course card title must be a semantic summary within eight characters', () => {
+  assert.equal(validateCourseShortTitle('自进化系统'), '自进化系统')
+  assert.throws(
+    () => validateCourseShortTitle('自进化智能代理学习系统'),
+    /semantic course summary of at most 8 characters/,
+  )
+  assert.throws(
+    () => validateCourseShortTitle('自进化：系统'),
+    /must not contain a colon/,
+  )
+})
+
+test('curriculum validation accepts per-node learning materials', () => {
+  const nodes = validateCurriculum('Rust ownership', [
+    {
+      id: 'ownership',
+      title: '所有权',
+      titleEn: 'Ownership',
+      leverage: 100,
+      resources: [
+        { title: ' The Rust Book ', url: 'https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html' },
+      ],
+    },
+  ])
+  assert.deepEqual(nodes[0].resources, [
+    {
+      title: 'The Rust Book',
+      url: 'https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html',
+    },
+  ])
+})
+
+test('curriculum validation rejects invalid node resources', () => {
+  assert.throws(
+    () => validateCurriculum('X', [
+      { id: 'one', title: 'One', leverage: 50, resources: [{ title: 'A', url: 'ftp://example.com' }] },
+    ]),
+    /only HTTP\(S\)/,
+  )
+  assert.throws(
+    () => validateCurriculum('X', [
+      {
+        id: 'one',
+        title: 'One',
+        leverage: 50,
+        resources: [
+          { title: 'A', url: 'https://example.com/a' },
+          { title: 'B', url: 'https://example.com/a' },
+        ],
+      },
+    ]),
+    /duplicate url/,
+  )
 })
 
 test('curriculum validation rejects duplicate and dangling node references', () => {

@@ -9,8 +9,8 @@ Run deliberate practice: short, active, immediately graded, and gamified.
 
 ## Process
 
-1. **Pick what's due.** Call `learn_next_practice` (optionally `count`). It returns skills ranked by spaced-repetition urgency and Pareto value, with linked resources.
-2. **Pose one exercise per skill.** Make the learner *produce*: recall from memory, apply to a new case, explain aloud, debug a broken example, or build something small. For programming domains, prefer runnable snippets and real bugs over multiple-choice.
+1. **Pick what's due.** Call `learn_next_practice` (optionally `count`). It returns skills ranked by spaced-repetition urgency and Pareto value, each with recommended materials as `title — url` when available.
+2. **Pose one exercise per skill.** Make the learner *produce*: recall from memory, apply to a new case, explain aloud, debug a broken example, or build something small. Point them at the linked materials when they need a primary source — don't replace active recall with passive reading.
 3. **Gamify lightly.** Frame skills as levels/quests, use the returned mastery/streak, escalate difficulty as mastery rises. Keep sessions short (3–5 items).
 4. **Save reusable drills.** When an exercise is good enough to repeat, store it with `learn_generate_drill` (`nodeId`, `type`, `prompt`, `answer`).
 5. **Grade immediately.** After each answer, call `learn_log_attempt` with a 0–5 grade (see below). Do not batch — one attempt, one log, then continue.

@@ -47,6 +47,7 @@ test('bridge registers an optional trusted Connection channel', async (t) => {
       levelProgress: 0,
       streak: 0,
       dueCount: 0,
+      nodes: [],
       revision: 'none',
     },
   })

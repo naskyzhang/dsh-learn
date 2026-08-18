@@ -11,14 +11,18 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   applyGrade,
   assertText,
+  attachResourceToNodes,
   awardProgress,
   dueCount,
+  formatNodeResources,
   makeId,
   newDomain,
   newNode,
   selectPractice,
   validateCurriculum,
+  validateCourseShortTitle,
   validateGrade,
+  validateHttpUrl,
   validateNodeReferences,
   validatePercentage,
 } from './store.js'
@@ -104,10 +108,18 @@ function curriculumTool(store) {
       'Deconstruct a domain into a skill tree and save it as the learning curriculum. '
       + 'Rank each node by `leverage` (0-100): the Pareto weight — how much of the 80% '
       + 'result this element carries. Set `deps` to prerequisite node ids so practice '
-      + 'follows learning order. Only one course can be active. If another unfinished course '
-      + 'is active, ask the user whether to pause or end it before retrying.',
+      + 'follows learning order. Optionally attach recommended learning materials '
+      + '(`resources: [{ title, url }]`) on each skill node. Only one course can be active. '
+      + 'If another unfinished course is active, ask the user whether to pause or end it before retrying.',
     parameters: {
       domain: { type: 'string', required: true, description: 'The domain title, e.g. "Rust ownership".' },
+      shortTitle: {
+        type: 'string',
+        required: true,
+        description:
+          'Semantic Chinese summary shown on the card, at most 8 characters. '
+          + 'Rewrite the course meaning; do not mechanically truncate.',
+      },
       previousCourseAction: {
         type: 'string',
         enum: ['pause', 'end'],
@@ -122,24 +134,66 @@ function curriculumTool(store) {
           additionalProperties: false,
           properties: {
             id: { type: 'string', required: true, description: 'Stable short id, e.g. "borrowing".' },
-            title: { type: 'string', required: true, description: 'Human-readable skill name.' },
+            title: {
+              type: 'string',
+              required: true,
+              description:
+                'Concise Chinese skill name, at most 8 characters. If a draft is longer, '
+                + 'summarize it semantically once; never truncate mechanically or add a colon subtitle.',
+            },
+            titleEn: {
+              type: 'string',
+              required: true,
+              description: 'Concise English name for the same skill, e.g. "Borrow Checker".',
+            },
             parent: { type: 'string', description: 'Parent node id, if this is a sub-skill.' },
             leverage: { type: 'integer', required: true, description: '0-100 Pareto weight.' },
             deps: { type: 'array', items: { type: 'string' }, description: 'Prerequisite node ids.' },
+            resources: {
+              type: 'array',
+              description: 'Recommended learning materials for this skill (name + link).',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  title: { type: 'string', required: true, description: 'Material name, e.g. "The Rust Book — Ownership".' },
+                  url: { type: 'string', required: true, description: 'Absolute HTTP(S) link.' },
+                },
+              },
+            },
           },
         },
       },
     },
     output: outputText(),
     async execute(args) {
+      const shortTitle = validateCourseShortTitle(args.shortTitle)
       const specs = validateCurriculum(args.domain, args.nodes)
-      const domain = newDomain(args.domain)
-      for (const spec of specs) domain.nodes[spec.id] = newNode(spec)
+      const domain = newDomain(args.domain, shortTitle)
+      const now = new Date().toISOString()
+      let resourceCount = 0
+      for (const spec of specs) {
+        domain.nodes[spec.id] = newNode(spec)
+        for (const resource of spec.resources) {
+          domain.resources.push({
+            id: makeId('res'),
+            author: 'recommended',
+            title: resource.title,
+            url: resource.url,
+            type: 'other',
+            summary: '',
+            nodeIds: [spec.id],
+            addedAt: now,
+          })
+          resourceCount += 1
+        }
+      }
       const transition = await store.startCourse(domain, args.previousCourseAction)
       const top = specs.slice().sort((a, b) => b.leverage - a.leverage).slice(0, 3)
         .map(n => `${n.title} (${n.leverage})`).join(', ')
       return text(
-        `Saved curriculum for "${domain.title}" with ${specs.length} skills. `
+        `Saved curriculum for "${domain.title}" with ${specs.length} skills `
+        + `and ${resourceCount} recommended materials. `
         + `${formatTransitions(transition.previous)}`
         + `Highest-leverage first: ${top}. Tip: render the tree with the drawio-skill, `
         + `then call learn_next_practice to start.`,
@@ -155,25 +209,31 @@ function addResourceTool(store) {
     name: 'learn_add_resource',
     description:
       'Record a top-quality learning resource (a leading practitioner\'s open source, '
-      + 'technical doc, or paper) and link it to the skill nodes it teaches. Prefer '
-      + 'primary sources from the strongest people in the field.',
+      + 'technical doc, or paper) and attach it to the skill nodes it teaches. '
+      + '`nodeIds` is required so every material hangs on at least one skill as '
+      + 'title + url recommendations. Prefer primary sources from the strongest people.',
     parameters: {
       domain: { type: 'string', description: 'Domain title; defaults to the active domain.' },
       author: { type: 'string', required: true, description: 'Who made it — the expert or org.' },
-      title: { type: 'string', required: true, description: 'Resource title.' },
+      title: { type: 'string', required: true, description: 'Resource title / recommended name.' },
       url: { type: 'string', required: true, description: 'Link to the resource.' },
       type: { type: 'string', required: true, enum: ['repo', 'paper', 'doc', 'video', 'course', 'other'], description: 'Resource kind.' },
       summary: { type: 'string', description: 'One-paragraph why-it-matters summary.' },
-      nodeIds: { type: 'array', items: { type: 'string' }, description: 'Skill node ids this resource teaches.' },
+      nodeIds: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: 'Skill node ids this resource teaches (at least one).',
+      },
     },
     output: outputText(),
     async execute(args) {
       const author = assertText('author', args.author, 200)
       const title = assertText('title', args.title, 300)
-      const url = validateUrl(args.url)
+      const url = validateHttpUrl('url', args.url)
       const summary = args.summary === undefined ? '' : assertText('summary', args.summary, 4000)
       const result = await store.update(args.domain, (domain) => {
-        const nodeIds = validateNodeReferences(domain, args.nodeIds ?? [], 'nodeIds', { allowEmpty: true })
+        const nodeIds = validateNodeReferences(domain, args.nodeIds ?? [], 'nodeIds')
         const resource = {
           id: makeId('res'),
           author,
@@ -185,9 +245,13 @@ function addResourceTool(store) {
           addedAt: new Date().toISOString(),
         }
         domain.resources.push(resource)
-        return { total: domain.resources.length, domainTitle: domain.title }
+        attachResourceToNodes(domain, nodeIds, { title, url })
+        return { total: domain.resources.length, domainTitle: domain.title, nodeIds }
       })
-      return text(`Added ${args.type} "${title}" by ${author} (${result.total} resources total in "${result.domainTitle}").`)
+      return text(
+        `Added ${args.type} "${title}" by ${author} to ${result.nodeIds.join(', ')} `
+        + `(${result.total} resources total in "${result.domainTitle}").`,
+      )
     },
     presentCall: args => ({ card: 'generic', title: `Add resource: ${args.title}`, kind: 'other', rawInput: args }),
   })
@@ -217,9 +281,9 @@ function nextPracticeTool(store, pacing) {
       const picks = selectPractice(domain, count)
       if (picks.length === 0) return text(`No skills to practice in "${domain.title}" yet — add a curriculum first.`)
       const lines = picks.map(n => {
-        const res = domain.resources.filter(r => r.nodeIds.includes(n.id)).map(r => r.title).slice(0, 2)
-        const refs = res.length ? ` [refs: ${res.join('; ')}]` : ''
-        return `- ${n.title} (id: ${n.id}, mastery ${n.mastery}/100, leverage ${n.leverage})${refs}`
+        const refs = formatNodeResources(n)
+        const header = `- ${n.title} (id: ${n.id}, mastery ${n.mastery}/100, leverage ${n.leverage})`
+        return refs ? `${header}\n${refs}` : header
       })
       return text(`Practice these next in "${domain.title}":\n${lines.join('\n')}`)
     },
@@ -370,13 +434,19 @@ function statusTool(store) {
       const domain = await store.require(args.domain)
       const nodes = Object.values(domain.nodes)
       const avg = nodes.length ? Math.round(nodes.reduce((s, n) => s + n.mastery, 0) / nodes.length) : 0
-      const weak = nodes.slice().sort((a, b) => (b.leverage * (100 - b.mastery)) - (a.leverage * (100 - a.mastery))).slice(0, 3).map(n => `${n.title} (${n.mastery}/100)`)
+      const nodeResourceCount = nodes.reduce((sum, node) => sum + (node.resources?.length ?? 0), 0)
+      const weak = nodes.slice().sort((a, b) => (b.leverage * (100 - b.mastery)) - (a.leverage * (100 - a.mastery))).slice(0, 3)
+      const focus = weak.map((node) => {
+        const refs = (node.resources ?? []).slice(0, 2).map(resource => `${resource.title} <${resource.url}>`).join('; ')
+        return refs ? `${node.title} (${node.mastery}/100; ${refs})` : `${node.title} (${node.mastery}/100)`
+      })
       const p = domain.profile
       return text(
         `"${domain.title}" — avg mastery ${avg}/100 across ${nodes.length} skills, `
-        + `${dueCount(domain)} due now, ${domain.resources.length} resources. `
+        + `${dueCount(domain)} due now, ${nodeResourceCount} node materials `
+        + `(${domain.resources.length} sourced entries). `
         + `Level ${p.level}, ${p.xp} XP, streak ${p.streak}. `
-        + `Focus next: ${weak.join('; ') || 'nothing yet'}.`,
+        + `Focus next: ${focus.join('; ') || 'nothing yet'}.`,
       )
     },
     presentCall: args => ({ card: 'generic', title: 'Learning status', kind: 'other', rawInput: args }),
@@ -417,23 +487,4 @@ function outputText() {
  */
 function text(message) {
   return { text: message }
-}
-
-/**
- * Accept only absolute HTTP(S) resource URLs.
- * @param {unknown} value - candidate URL.
- * @returns {string} normalized URL.
- */
-function validateUrl(value) {
-  const text = assertText('url', value, 2048)
-  let url
-  try {
-    url = new URL(text)
-  } catch {
-    throw new Error('invalid url: must be an absolute HTTP(S) URL')
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('invalid url: only HTTP(S) URLs are allowed')
-  }
-  return url.toString()
 }

@@ -5,8 +5,8 @@ export const companionStyles = `
   top: 0;
   left: 0;
   z-index: 1;
-  width: min(224px, calc(100vw - 24px));
-  height: 136px;
+  width: min(226px, calc(100vw - 24px));
+  height: 68px;
   overflow: visible;
   pointer-events: none !important;
   will-change: transform;
@@ -34,7 +34,7 @@ export const companionStyles = `
   --flower-gold: #ffd466;
   position: relative;
   width: 100%;
-  height: 136px;
+  height: 68px;
   color: var(--learn-ink);
   pointer-events: none;
   user-select: none;
@@ -66,26 +66,37 @@ export const companionStyles = `
 }
 
 .dsh-learn-details {
+  position: absolute;
+  left: 30px;
+  z-index: 5;
   box-sizing: border-box;
-  width: min(166px, calc(100vw - 24px));
+  width: min(196px, calc(100vw - 24px));
+  height: auto;
   min-height: 62px;
-  margin-top: 4px;
-  margin-left: 37px;
-  padding: 9px 12px 8px;
+  margin: 0;
+  padding: 10px 10px 9px;
   border: 2px solid var(--pixel-outline);
   background: color-mix(in srgb, var(--learn-panel) 96%, transparent);
   box-shadow:
     4px 4px 0 color-mix(in srgb, var(--pixel-outline) 55%, transparent),
     inset 2px 2px 0 color-mix(in srgb, white 45%, transparent);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   line-height: 1.2;
-  pointer-events: none;
+  pointer-events: auto;
+  scrollbar-width: thin;
   animation: dsh-learn-dialog-open 140ms steps(3, end);
 }
 
-@media (max-width: 220px) {
-  .dsh-learn-details {
-    margin-left: 0;
-  }
+.dsh-learn-details[data-placement="below"] {
+  top: 72px;
+  transform-origin: 50% 0;
+}
+
+.dsh-learn-details[data-placement="above"] {
+  bottom: 88px;
+  transform-origin: 50% 100%;
 }
 
 .dsh-learn-title,
@@ -120,6 +131,132 @@ export const companionStyles = `
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9px;
   font-weight: 700;
+}
+
+.dsh-learn-card-summary {
+  padding: 0 2px 9px;
+}
+
+.dsh-learn-tree {
+  border-top: 2px solid color-mix(in srgb, var(--learn-line) 55%, transparent);
+  padding-top: 8px;
+}
+
+.dsh-learn-tree-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 2px 6px;
+  color: var(--learn-accent);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: .5px;
+}
+
+.dsh-learn-tree-heading span:last-child {
+  color: var(--learn-muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.dsh-learn-tree-list {
+  display: grid;
+  gap: 4px;
+}
+
+.dsh-learn-skill {
+  min-width: 0;
+  padding: 6px 7px;
+  border-left: 2px solid color-mix(in srgb, var(--learn-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--learn-accent) 7%, transparent);
+}
+
+.dsh-learn-skill-line {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+}
+
+.dsh-learn-tree-branch {
+  flex: none;
+  width: 11px;
+  color: var(--learn-accent);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.dsh-learn-skill-names {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.dsh-learn-skill-title,
+.dsh-learn-skill-title-en {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-learn-skill-title {
+  color: var(--learn-ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.dsh-learn-skill-title-en {
+  color: var(--learn-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.dsh-learn-skill-score {
+  align-self: start;
+  flex: none;
+  color: var(--learn-muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dsh-learn-mastery-track {
+  display: block;
+  height: 4px;
+  margin: 5px 0 1px 16px;
+  background: color-mix(in srgb, var(--learn-line) 20%, transparent);
+}
+
+.dsh-learn-mastery-track > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: var(--learn-accent);
+}
+
+.dsh-learn-resource {
+  display: block;
+  margin: 5px 0 0 16px;
+  overflow: hidden;
+  color: var(--learn-muted);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-learn-resource:hover,
+.dsh-learn-resource:focus-visible {
+  color: var(--learn-accent);
+  text-decoration: underline;
+  outline: none;
 }
 
 .dsh-learn-cat {

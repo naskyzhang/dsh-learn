@@ -466,12 +466,13 @@ export class LearnStore {
     ))
     return {
       domainId: domain.id,
-      domainTitle: domain.title,
+      domainTitle: domain.shortTitle ?? legacyCourseShortTitle(domain.title),
       xp,
       level,
       levelProgress,
       streak: domain.profile.streak,
       dueCount: dueCount(domain),
+      nodes: companionNodes(domain),
       revision: domain.updatedAt,
     }
   }
@@ -549,8 +550,79 @@ function emptyCompanionSnapshot() {
     levelProgress: 0,
     streak: 0,
     dueCount: 0,
+    nodes: [],
     revision: 'none',
   }
+}
+
+/**
+ * Project the curriculum into a browser-safe, read-only tree.
+ * @param {object} domain - active learning document.
+ * @returns {object[]} compact skill nodes in curriculum insertion order.
+ */
+function companionNodes(domain) {
+  return Object.values(domain.nodes ?? {}).slice(0, MAX_CURRICULUM_NODES).map(node => ({
+    id: node.id,
+    title: node.title,
+    titleEn: typeof node.titleEn === 'string' && node.titleEn.trim()
+      ? node.titleEn
+      : humanizeNodeId(node.id),
+    parent: typeof node.parent === 'string' ? node.parent : null,
+    mastery: clamp(Number.isFinite(node.mastery) ? node.mastery : 0, 0, 100),
+    leverage: clamp(Number.isFinite(node.leverage) ? node.leverage : 0, 0, 100),
+    resources: (Array.isArray(node.resources) ? node.resources : [])
+      .map(companionResource)
+      .filter(Boolean)
+      .slice(0, MAX_NODE_RESOURCES),
+  }))
+}
+
+/**
+ * Drop malformed or unsafe links before they cross the Host→browser boundary.
+ * @param {unknown} value - persisted node resource.
+ * @returns {{ title: string, url: string } | null} safe compact resource.
+ */
+function companionResource(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  if (typeof value.title !== 'string' || value.title.length === 0 || value.title.length > 300) return null
+  if (typeof value.url !== 'string' || value.url.length > 2048) return null
+  try {
+    const url = new URL(value.url)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return { title: value.title, url: url.toString() }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Give legacy nodes a readable English label without mutating stored courses.
+ * @param {string} id - stable kebab/snake node id.
+ * @returns {string} title-cased fallback.
+ */
+function humanizeNodeId(id) {
+  return id
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+/**
+ * Produce a conservative card label for courses created before `shortTitle`.
+ * New curricula never use this path: their semantic summary is model-authored.
+ * @param {string} title - legacy full course title.
+ * @returns {string} compact compatibility label.
+ */
+function legacyCourseShortTitle(title) {
+  if (!/[\u3400-\u9fff]/u.test(title)) return title
+  const compact = title
+    .split(/[:：—–-]/, 1)[0]
+    .replace(/\s+/g, '')
+    .replace(/(?:学习)?(?:课程|系统)$/u, '')
+    .trim()
+  if ([...compact].length <= 8) return compact || title
+  return title
 }
 
 /**
@@ -576,14 +648,16 @@ export function isCourseComplete(domain) {
 /**
  * Build a fresh, empty domain document.
  * @param {string} title - the human domain title.
+ * @param {string} [shortTitle] - model-authored card summary (at most 8 characters).
  * @returns {object} a new domain document.
  */
-export function newDomain(title) {
+export function newDomain(title, shortTitle) {
   const now = new Date().toISOString()
   return {
     version: STORE_VERSION,
     id: domainId(title),
     title: title.trim(),
+    shortTitle: shortTitle === undefined ? null : validateCourseShortTitle(shortTitle),
     createdAt: now,
     updatedAt: now,
     lifecycle: {
@@ -602,6 +676,25 @@ export function newDomain(title) {
 }
 
 /**
+ * Validate the model-authored semantic summary used in the learning card.
+ * @param {unknown} value - candidate concise Chinese course description.
+ * @returns {string} normalized short title.
+ */
+export function validateCourseShortTitle(value) {
+  const title = assertText('shortTitle', value, 32)
+  if ([...title].length > 8) {
+    throw new Error(
+      'invalid shortTitle: must be a semantic course summary of at most 8 characters; '
+      + 'rewrite the meaning instead of truncating it',
+    )
+  }
+  if (/[:：]/u.test(title)) {
+    throw new Error('invalid shortTitle: must not contain a colon or explanatory subtitle')
+  }
+  return title
+}
+
+/**
  * Create a scheduling record for a newly deconstructed skill node. New nodes are
  * due immediately so the first practice session can reach them.
  * @param {{ id: string, title: string, parent?: string, leverage?: number, deps?: string[] }} spec - the node spec.
@@ -611,8 +704,11 @@ export function newNode(spec) {
   return {
     id: spec.id,
     title: spec.title,
+    titleEn: spec.titleEn ?? null,
     parent: spec.parent ?? null,
     deps: spec.deps ?? [],
+    // Recommended learning materials (name + link) for this skill.
+    resources: (spec.resources ?? []).map(resource => ({ ...resource })),
     // 0-100 Pareto leverage: how much of the "80% result" this element carries.
     leverage: clamp(spec.leverage ?? 50, 0, 100),
     // 0-100 mastery, updated by graded attempts.
@@ -628,6 +724,8 @@ export function newNode(spec) {
 
 /** Maximum curriculum size accepted from one model tool call. */
 const MAX_CURRICULUM_NODES = 100
+/** Cap recommended materials so a node stays readable during practice. */
+const MAX_NODE_RESOURCES = 20
 /** Stable node ids keep references compact and avoid ambiguous whitespace. */
 const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -655,15 +753,25 @@ export function validateCurriculum(title, specs) {
     const id = assertNodeId(`nodes[${index}].id`, raw.id)
     if (ids.has(id)) throw new Error(`invalid curriculum: duplicate node id '${id}'`)
     ids.add(id)
-    const nodeTitle = assertText(`nodes[${index}].title`, raw.title, 200)
+    const nodeTitle = assertText(`nodes[${index}].title`, raw.title, 80)
+    if ([...nodeTitle].length > 8) {
+      throw new Error(
+        `invalid curriculum: nodes[${index}].title must be a concise Chinese name of at most 8 characters; `
+        + 'summarize the skill instead of truncating it',
+      )
+    }
+    const titleEn = raw.titleEn === undefined
+      ? null
+      : assertText(`nodes[${index}].titleEn`, raw.titleEn, 120)
     if (!Number.isInteger(raw.leverage) || raw.leverage < 0 || raw.leverage > 100) {
       throw new Error(`invalid curriculum: nodes[${index}].leverage must be an integer from 0 to 100`)
     }
     const parent = raw.parent === undefined ? null : assertNodeId(`nodes[${index}].parent`, raw.parent)
     const deps = raw.deps === undefined ? [] : validateNodeIdList(`nodes[${index}].deps`, raw.deps)
+    const resources = validateNodeResources(`nodes[${index}].resources`, raw.resources)
     if (parent === id) throw new Error(`invalid curriculum: node '${id}' cannot be its own parent`)
     if (deps.includes(id)) throw new Error(`invalid curriculum: node '${id}' cannot depend on itself`)
-    normalized.push({ id, title: nodeTitle, parent, leverage: raw.leverage, deps })
+    normalized.push({ id, title: nodeTitle, titleEn, parent, leverage: raw.leverage, deps, resources })
   }
 
   for (const node of normalized) {
@@ -677,6 +785,86 @@ export function validateCurriculum(title, specs) {
   assertAcyclic(normalized, node => node.parent === null ? [] : [node.parent], 'parent')
   assertAcyclic(normalized, node => node.deps, 'dependency')
   return normalized
+}
+
+/**
+ * Validate recommended learning materials attached to one skill node.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} value - candidate resource list.
+ * @returns {{ title: string, url: string }[]} normalized recommendations.
+ */
+export function validateNodeResources(field, value) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error(`invalid ${field}: must be an array`)
+  if (value.length > MAX_NODE_RESOURCES) {
+    throw new Error(`invalid ${field}: at most ${MAX_NODE_RESOURCES} resources are allowed`)
+  }
+  const normalized = []
+  const urls = new Set()
+  for (const [index, raw] of value.entries()) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error(`invalid ${field}[${index}]: must be an object with title and url`)
+    }
+    const title = assertText(`${field}[${index}].title`, raw.title, 300)
+    const url = validateHttpUrl(`${field}[${index}].url`, raw.url)
+    if (urls.has(url)) throw new Error(`invalid ${field}: duplicate url '${url}'`)
+    urls.add(url)
+    normalized.push({ title, url })
+  }
+  return normalized
+}
+
+/**
+ * Attach a recommended material to one or more skill nodes without duplicates.
+ * @param {object} domain - mutable domain document.
+ * @param {string[]} nodeIds - target skill nodes.
+ * @param {{ title: string, url: string }} resource - material name and link.
+ * @returns {number} how many node lists gained a new entry.
+ */
+export function attachResourceToNodes(domain, nodeIds, resource) {
+  let attached = 0
+  for (const nodeId of nodeIds) {
+    const node = domain.nodes[nodeId]
+    if (!Array.isArray(node.resources)) node.resources = []
+    if (node.resources.some(entry => entry.url === resource.url)) continue
+    if (node.resources.length >= MAX_NODE_RESOURCES) {
+      throw new Error(`invalid resources: skill '${nodeId}' already has ${MAX_NODE_RESOURCES} materials`)
+    }
+    node.resources.push({ title: resource.title, url: resource.url })
+    attached += 1
+  }
+  return attached
+}
+
+/**
+ * Accept only absolute HTTP(S) URLs for learning materials.
+ * @param {string} field - diagnostic field name.
+ * @param {unknown} value - candidate URL.
+ * @returns {string} normalized URL.
+ */
+export function validateHttpUrl(field, value) {
+  const text = assertText(field, value, 2048)
+  let url
+  try {
+    url = new URL(text)
+  } catch {
+    throw new Error(`invalid ${field}: must be an absolute HTTP(S) URL`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`invalid ${field}: only HTTP(S) URLs are allowed`)
+  }
+  return url.toString()
+}
+
+/**
+ * Format recommended materials for coach-facing tool text.
+ * @param {object} node - skill node.
+ * @returns {string} multi-line bullet list, or empty string when none.
+ */
+export function formatNodeResources(node) {
+  const resources = Array.isArray(node.resources) ? node.resources : []
+  if (resources.length === 0) return ''
+  return resources.map(resource => `  · ${resource.title} — ${resource.url}`).join('\n')
 }
 
 /**

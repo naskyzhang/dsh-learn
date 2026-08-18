@@ -18,9 +18,10 @@ async function fixture(t) {
   const execute = (name, args) => tools.get(name).execute(args)
   await execute('learn_curriculum', {
     domain: 'Testing',
+    shortTitle: '测试课程',
     nodes: [
-      { id: 'basics', title: 'Basics', leverage: 100 },
-      { id: 'advanced', title: 'Advanced', leverage: 80, deps: ['basics'] },
+      { id: 'basics', title: '基础', titleEn: 'Basics', leverage: 100 },
+      { id: 'advanced', title: '进阶', titleEn: 'Advanced', leverage: 80, deps: ['basics'] },
     ],
   })
   return { store, execute }
@@ -32,9 +33,10 @@ test('curriculum tool rejects invalid graphs before replacing state', async (t) 
   await assert.rejects(
     execute('learn_curriculum', {
       domain: 'Testing',
+      shortTitle: '测试课程',
       nodes: [
-        { id: 'one', title: 'One', leverage: 50, deps: ['two'] },
-        { id: 'two', title: 'Two', leverage: 50, deps: ['one'] },
+        { id: 'one', title: '一', titleEn: 'One', leverage: 50, deps: ['two'] },
+        { id: 'two', title: '二', titleEn: 'Two', leverage: 50, deps: ['one'] },
       ],
     }),
     /dependency cycle/,
@@ -82,6 +84,16 @@ test('resource and review tools reject unknown references and invalid ranges', a
     /unknown skill node 'missing'/,
   )
   await assert.rejects(
+    execute('learn_add_resource', {
+      author: 'Expert',
+      title: 'Reference',
+      url: 'https://example.com/reference',
+      type: 'doc',
+      nodeIds: [],
+    }),
+    /at least one skill node is required/,
+  )
+  await assert.rejects(
     execute('learn_review', {
       summary: 'Review',
       adjustments: [{ nodeId: 'basics', mastery: 101 }],
@@ -92,6 +104,48 @@ test('resource and review tools reject unknown references and invalid ranges', a
   const saved = await store.require('Testing')
   assert.equal(saved.resources.length, 0)
   assert.equal(saved.reviews.length, 0)
+})
+
+test('curriculum and resource tools hang name+url materials on skill nodes', async (t) => {
+  const { store, execute } = await fixture(t)
+
+  await execute('learn_curriculum', {
+    domain: 'Testing',
+    shortTitle: '测试课程',
+    previousCourseAction: 'end',
+    nodes: [
+      {
+        id: 'basics',
+        title: '基础',
+        titleEn: 'Basics',
+        leverage: 100,
+        resources: [{ title: 'Intro Guide', url: 'https://example.com/intro' }],
+      },
+      { id: 'advanced', title: '进阶', titleEn: 'Advanced', leverage: 80, deps: ['basics'] },
+    ],
+  })
+
+  await execute('learn_add_resource', {
+    author: 'Expert',
+    title: 'Deep Dive',
+    url: 'https://example.com/deep',
+    type: 'doc',
+    nodeIds: ['basics', 'advanced'],
+  })
+
+  const saved = await store.require('Testing')
+  assert.deepEqual(saved.nodes.basics.resources, [
+    { title: 'Intro Guide', url: 'https://example.com/intro' },
+    { title: 'Deep Dive', url: 'https://example.com/deep' },
+  ])
+  assert.deepEqual(saved.nodes.advanced.resources, [
+    { title: 'Deep Dive', url: 'https://example.com/deep' },
+  ])
+  assert.equal(saved.resources.length, 2)
+
+  const practice = await execute('learn_next_practice', { count: 1 })
+  assert.match(practice.text, /Intro Guide — https:\/\/example\.com\/intro/)
+  assert.match(practice.text, /Deep Dive — https:\/\/example\.com\/deep/)
 })
 
 test('parallel attempt tools preserve every attempt and XP award', async (t) => {
@@ -110,7 +164,8 @@ test('switching unfinished courses requires pause or end, and paused work can re
   const { store, execute } = await fixture(t)
   const nextCurriculum = {
     domain: 'Next topic',
-    nodes: [{ id: 'start', title: 'Start', leverage: 100 }],
+    shortTitle: '下一主题',
+    nodes: [{ id: 'start', title: '开始', titleEn: 'Start', leverage: 100 }],
   }
 
   await assert.rejects(

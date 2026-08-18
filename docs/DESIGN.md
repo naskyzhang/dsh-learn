@@ -32,6 +32,7 @@
   "version": 1,
   "id": "rust-ownership",          // 由标题 slug 化得到，稳定
   "title": "Rust ownership",
+  "shortTitle": "Rust所有权",       // 卡片语义摘要，≤8 字，不机械截断
   "createdAt": "...", "updatedAt": "...",
   "lifecycle": {                    // 同时最多一个 active
     "state": "active|paused|completed",
@@ -39,14 +40,19 @@
   },
   "nodes": {                        // 技能树，键为节点 id
     "borrowing": {
-      "id": "borrowing", "title": "借用检查", "parent": null, "deps": [],
+      "id": "borrowing", "title": "借用检查", "titleEn": "Borrow Checker", // 中文名 ≤8 字
+      "parent": null, "deps": [],
       "leverage": 90,               // 0-100 Pareto 杠杆分
       "mastery": 40,                // 0-100 掌握度（分级练习更新）
+      "resources": [                // 该技能推荐的学习资料（名字 + 链接）
+        { "title": "The Rust Book — Ownership",
+          "url": "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html" }
+      ],
       "ease": 2.5, "intervalDays": 6, "reps": 2, "lapses": 0,  // SM-2 状态
       "dueAt": "..."                // 下次复习时间
     }
   },
-  "resources": [                    // 溯源得到的资料
+  "resources": [                    // 溯源得到的资料（含作者/类型/摘要），并回写到节点 resources
     { "id": "res_..", "author": "..", "title": "..", "url": "..",
       "type": "repo|paper|doc|video|course|other", "summary": "..", "nodeIds": ["borrowing"] }
   ],
@@ -67,8 +73,8 @@
 
 - 课程节点 ID 唯一，父节点和依赖均存在，父子图与依赖图都无环；
 - `grade` 必须是 0–5 整数，`leverage` / `mastery` 必须是 0–100 整数，不再静默截断；
-- 资源、练习和复盘中的节点引用必须存在，`drillId` 必须存在且属于本次练习节点；
-- 标题、题目、答案、复盘等文本必须非空并有长度上限，资源地址仅接受绝对 HTTP(S) URL。
+- 资源、练习和复盘中的节点引用必须存在，`drillId` 必须存在且属于本次练习节点；挂资料时 `nodeIds` 至少指向一个已有技能；
+- 标题、题目、答案、复盘等文本必须非空并有长度上限，资源地址仅接受绝对 HTTP(S) URL；每个技能节点最多 20 条推荐资料，URL 不可重复。
 
 ## 课程生命周期
 
@@ -89,8 +95,8 @@
 | 工具 | 阶段 | 作用 |
 |------|------|------|
 | `learn_course` | 生命周期 | 列出、恢复或永久结束课程 |
-| `learn_curriculum` | ① 解构 | 建/替换某领域的 Pareto 技能树 |
-| `learn_add_resource` | ② 溯源 | 记录专家资料并关联到技能节点 |
+| `learn_curriculum` | ① 解构 | 建/替换某领域的 Pareto 技能树；节点可带 `resources: [{ title, url }]` |
+| `learn_add_resource` | ② 溯源 | 记录专家资料并挂到技能节点（必填 `nodeIds`，同步写入节点推荐列表） |
 | `learn_next_practice` | ③ 练习 | 按 SRS + 杠杆返回该练的技能 |
 | `learn_generate_drill` | ③ 练习 | 保存可复用的练习题 |
 | `learn_log_attempt` | ④ 反馈 | 记录一次分级结果，更新 SM-2 / 掌握度 / XP |
