@@ -642,7 +642,8 @@ export function courseState(domain) {
  */
 export function isCourseComplete(domain) {
   const nodes = Object.values(domain.nodes ?? {})
-  return nodes.length > 0 && nodes.every(node => node.mastery >= 80)
+  return domain.workflow?.phase === 'completed'
+    || (nodes.length > 0 && nodes.every(node => node.mastery >= 80))
 }
 
 /**
@@ -671,8 +672,352 @@ export function newDomain(title, shortTitle) {
     drills: [],
     attempts: [],
     reviews: [],
+    workflow: {
+      phase: 'learning',
+      completedLessons: [],
+      literature: {
+        authoritative: [],
+        trending: [],
+        experts: [],
+        recommendedAt: null,
+        completedAt: null,
+      },
+      reviewStartedAt: null,
+      capstone: emptyCapstoneState(),
+    },
     profile: { xp: 0, level: 1, streak: 0, lastPracticeDay: null },
   }
+}
+
+/**
+ * Normalize the durable course journey, including migration from pre-workflow documents.
+ * Legacy attempts count as completed first-pass lessons so existing learners do not restart blindly.
+ * @param {object} domain - persisted domain document.
+ * @returns {object} normalized workflow stored on the domain.
+ */
+export function ensureWorkflow(domain) {
+  const nodeIds = Object.keys(domain.nodes ?? {})
+  const known = new Set(nodeIds)
+  const raw = domain.workflow
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    const attempted = new Set((domain.attempts ?? []).map(attempt => attempt.nodeId).filter(id => known.has(id)))
+    const completedLessons = nodeIds.filter(id => attempted.has(id))
+    domain.workflow = {
+      phase: nodeIds.length > 0 && completedLessons.length === nodeIds.length ? 'literature' : 'learning',
+      completedLessons,
+      literature: emptyLiteratureState(),
+      reviewStartedAt: null,
+      capstone: emptyCapstoneState(),
+    }
+    return domain.workflow
+  }
+  const completed = Array.isArray(raw.completedLessons) ? raw.completedLessons : []
+  raw.completedLessons = [...new Set(completed.filter(id => typeof id === 'string' && known.has(id)))]
+  raw.phase = ['learning', 'literature', 'review', 'capstone', 'completed'].includes(raw.phase)
+    ? raw.phase
+    : 'learning'
+  const literature = raw.literature
+  raw.literature = literature !== null && typeof literature === 'object' && !Array.isArray(literature)
+    ? {
+        authoritative: Array.isArray(literature.authoritative) ? literature.authoritative : [],
+        trending: Array.isArray(literature.trending) ? literature.trending : [],
+        experts: Array.isArray(literature.experts) ? literature.experts : [],
+        recommendedAt: typeof literature.recommendedAt === 'string' ? literature.recommendedAt : null,
+        completedAt: typeof literature.completedAt === 'string' ? literature.completedAt : null,
+      }
+    : emptyLiteratureState()
+  raw.reviewStartedAt = typeof raw.reviewStartedAt === 'string' ? raw.reviewStartedAt : null
+  const capstone = raw.capstone
+  raw.capstone = capstone !== null && typeof capstone === 'object' && !Array.isArray(capstone)
+    ? {
+        projects: Array.isArray(capstone.projects) ? capstone.projects : [],
+        blueprint: capstone.blueprint !== null && typeof capstone.blueprint === 'object'
+          && !Array.isArray(capstone.blueprint) ? capstone.blueprint : null,
+        completedAt: typeof capstone.completedAt === 'string' ? capstone.completedAt : null,
+      }
+    : emptyCapstoneState()
+  return raw
+}
+
+function emptyLiteratureState() {
+  return {
+    authoritative: [],
+    trending: [],
+    experts: [],
+    recommendedAt: null,
+    completedAt: null,
+  }
+}
+
+function emptyCapstoneState() {
+  return {
+    projects: [],
+    blueprint: null,
+    completedAt: null,
+  }
+}
+
+/**
+ * Return the next unfinished lesson in curriculum insertion order.
+ * @param {object} domain - persisted domain document.
+ * @returns {object | null} next node, or null once the first pass is complete.
+ */
+export function nextLesson(domain) {
+  const workflow = ensureWorkflow(domain)
+  const completed = new Set(workflow.completedLessons)
+  return Object.values(domain.nodes ?? {}).find(node => !completed.has(node.id)) ?? null
+}
+
+/**
+ * Complete exactly the next lesson and advance to literature after the final node.
+ * @param {object} domain - persisted domain document.
+ * @param {string} nodeId - lesson being completed.
+ * @returns {{ node: object, next: object | null, phase: string }} transition summary.
+ */
+export function completeLesson(domain, nodeId) {
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'learning') {
+    throw new Error(`course phase is '${workflow.phase}'; first-pass lessons are already complete`)
+  }
+  const expected = nextLesson(domain)
+  if (expected === null) throw new Error('all first-pass lessons are already complete')
+  if (nodeId !== expected.id) {
+    throw new Error(`lessons must be completed in order; next lesson is '${expected.id}'`)
+  }
+  workflow.completedLessons.push(nodeId)
+  const next = nextLesson(domain)
+  if (next === null) workflow.phase = 'literature'
+  return { node: expected, next, phase: workflow.phase }
+}
+
+/**
+ * Validate and save the fixed literature-reading slate for one course.
+ * @param {object} domain - persisted domain document.
+ * @param {object[]} authoritative - three canonical readings.
+ * @param {object[]} trending - two high-heat readings from the past year.
+ * @param {object[]} experts - three authoritative people and one primary artifact each.
+ * @param {Date} [now] - validation clock.
+ * @returns {object} normalized literature state.
+ */
+export function setLiteratureRecommendations(domain, authoritative, trending, experts, now = new Date()) {
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'literature') {
+    throw new Error(`literature recommendations require phase 'literature', current phase is '${workflow.phase}'`)
+  }
+  if (!Array.isArray(authoritative) || authoritative.length !== 3) {
+    throw new Error('invalid authoritative readings: exactly 3 are required')
+  }
+  if (!Array.isArray(trending) || trending.length !== 2) {
+    throw new Error('invalid trending readings: exactly 2 are required')
+  }
+  if (!Array.isArray(experts) || experts.length !== 3) {
+    throw new Error('invalid experts: exactly 3 are required')
+  }
+  const canonical = authoritative.map((item, index) => literatureReading(item, `authoritative[${index}]`, false, now))
+  const hot = trending.map((item, index) => literatureReading(item, `trending[${index}]`, true, now))
+  const people = experts.map((item, index) => literatureExpert(item, `experts[${index}]`))
+  const urls = [...canonical, ...hot].map(item => item.url).concat(people.map(item => item.artifactUrl))
+  if (new Set(urls).size !== urls.length) throw new Error('invalid literature: recommendation URLs must be unique')
+  workflow.literature = {
+    authoritative: canonical,
+    trending: hot,
+    experts: people,
+    recommendedAt: now.toISOString(),
+    completedAt: null,
+  }
+  return workflow.literature
+}
+
+function literatureReading(item, field, recent, now) {
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error(`invalid ${field}: must be an object`)
+  }
+  const type = assertText(`${field}.type`, item.type, 30)
+  if (!['article', 'paper', 'technical-blog'].includes(type)) {
+    throw new Error(`invalid ${field}.type: expected article, paper, or technical-blog`)
+  }
+  const reading = {
+    title: assertText(`${field}.title`, item.title, 300),
+    author: assertText(`${field}.author`, item.author, 200),
+    type,
+    url: validateHttpUrl(`${field}.url`, item.url),
+    reason: assertText(`${field}.reason`, item.reason, 2000),
+  }
+  if (!recent) return reading
+  const publishedAt = assertText(`${field}.publishedAt`, item.publishedAt, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(publishedAt)) {
+    throw new Error(`invalid ${field}.publishedAt: expected YYYY-MM-DD`)
+  }
+  const publishedMs = Date.parse(`${publishedAt}T00:00:00.000Z`)
+  const age = now.getTime() - publishedMs
+  if (!Number.isFinite(publishedMs) || age < -DAY_MS || age > 366 * DAY_MS) {
+    throw new Error(`invalid ${field}.publishedAt: trending readings must be from the past year`)
+  }
+  return {
+    ...reading,
+    publishedAt,
+    heatEvidence: assertText(`${field}.heatEvidence`, item.heatEvidence, 2000),
+  }
+}
+
+function literatureExpert(item, field) {
+  if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+    throw new Error(`invalid ${field}: must be an object`)
+  }
+  const artifactType = assertText(`${field}.artifactType`, item.artifactType, 30)
+  if (!['interview', 'article', 'talk', 'essay'].includes(artifactType)) {
+    throw new Error(`invalid ${field}.artifactType: expected interview, article, talk, or essay`)
+  }
+  return {
+    name: assertText(`${field}.name`, item.name, 200),
+    authority: assertText(`${field}.authority`, item.authority, 2000),
+    artifactTitle: assertText(`${field}.artifactTitle`, item.artifactTitle, 300),
+    artifactType,
+    artifactUrl: validateHttpUrl(`${field}.artifactUrl`, item.artifactUrl),
+    keyViewpoint: assertText(`${field}.keyViewpoint`, item.keyViewpoint, 4000),
+  }
+}
+
+/**
+ * Finish literature reading and enter the first sequential review pass.
+ * @param {object} domain - persisted domain document.
+ * @param {Date} [now] - transition clock.
+ * @returns {object} first curriculum node.
+ */
+export function completeLiterature(domain, now = new Date()) {
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'literature') {
+    throw new Error(`literature completion requires phase 'literature', current phase is '${workflow.phase}'`)
+  }
+  const literature = workflow.literature
+  if (literature.authoritative.length !== 3 || literature.trending.length !== 2 || literature.experts.length !== 3) {
+    throw new Error('literature recommendations must be saved before completing the reading phase')
+  }
+  const completedAt = now.toISOString()
+  literature.completedAt = completedAt
+  workflow.phase = 'review'
+  workflow.reviewStartedAt = completedAt
+  return Object.values(domain.nodes ?? {})[0] ?? null
+}
+
+/**
+ * Advance from sequential review once every node has one correct scheduled answer.
+ * Grade 3 is already defined as correct-but-hard; card-triggered attempts never
+ * satisfy this global completion gate.
+ * @param {object} domain - persisted domain document.
+ * @returns {boolean} whether this call entered the capstone phase.
+ */
+export function advanceReviewToCapstone(domain) {
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'review' || workflow.reviewStartedAt === null) return false
+  const startedAt = Date.parse(workflow.reviewStartedAt)
+  const correct = new Set((domain.attempts ?? [])
+    .filter(attempt => attempt.source !== 'card'
+      && attempt.grade >= 3
+      && Date.parse(attempt.ts) >= startedAt)
+    .map(attempt => attempt.nodeId))
+  const nodeIds = Object.keys(domain.nodes ?? {})
+  if (nodeIds.length === 0 || !nodeIds.every(id => correct.has(id))) return false
+  workflow.phase = 'capstone'
+  workflow.capstone = emptyCapstoneState()
+  return true
+}
+
+/**
+ * Save a comparison of the strongest open-source references and a zero-to-one blueprint.
+ * @param {object} domain - persisted domain document.
+ * @param {object[]} projects - two or three open-source systems.
+ * @param {object} blueprint - recommended foundation and staged borrowing plan.
+ * @param {Date} [now] - completion clock.
+ * @returns {object} normalized capstone state.
+ */
+export function setOpenSourceBlueprint(domain, projects, blueprint, now = new Date()) {
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'capstone') {
+    throw new Error(`open-source blueprint requires phase 'capstone', current phase is '${workflow.phase}'`)
+  }
+  if (!Array.isArray(projects) || projects.length < 2 || projects.length > 3) {
+    throw new Error('invalid open-source projects: exactly 2 or 3 are required')
+  }
+  const normalizedProjects = projects.map((project, index) => openSourceProject(project, `projects[${index}]`))
+  const names = normalizedProjects.map(project => project.name)
+  const urls = normalizedProjects.map(project => project.url)
+  if (new Set(names).size !== names.length) throw new Error('invalid open-source projects: names must be unique')
+  if (new Set(urls).size !== urls.length) throw new Error('invalid open-source projects: URLs must be unique')
+  const normalizedBlueprint = openSourceBlueprint(blueprint, new Set(names))
+  const completedAt = now.toISOString()
+  workflow.capstone = {
+    projects: normalizedProjects,
+    blueprint: normalizedBlueprint,
+    completedAt,
+  }
+  workflow.phase = 'completed'
+  return workflow.capstone
+}
+
+function openSourceProject(project, field) {
+  if (project === null || typeof project !== 'object' || Array.isArray(project)) {
+    throw new Error(`invalid ${field}: must be an object`)
+  }
+  return {
+    name: assertText(`${field}.name`, project.name, 200),
+    url: validateHttpUrl(`${field}.url`, project.url),
+    license: assertText(`${field}.license`, project.license, 100),
+    whyWorthLearning: assertText(`${field}.whyWorthLearning`, project.whyWorthLearning, 3000),
+    implementation: assertText(`${field}.implementation`, project.implementation, 6000),
+    strengths: textList(`${field}.strengths`, project.strengths, 1, 8, 2000),
+    weaknesses: textList(`${field}.weaknesses`, project.weaknesses, 1, 8, 2000),
+    borrowParts: objectList(`${field}.borrowParts`, project.borrowParts, 1, 8, (part, partField) => ({
+      part: assertText(`${partField}.part`, part.part, 300),
+      useFor: assertText(`${partField}.useFor`, part.useFor, 2000),
+      adaptation: assertText(`${partField}.adaptation`, part.adaptation, 3000),
+    })),
+  }
+}
+
+function openSourceBlueprint(blueprint, projectNames) {
+  if (blueprint === null || typeof blueprint !== 'object' || Array.isArray(blueprint)) {
+    throw new Error('invalid blueprint: must be an object')
+  }
+  const recommendedFoundation = assertText('blueprint.recommendedFoundation', blueprint.recommendedFoundation, 200)
+  if (!projectNames.has(recommendedFoundation)) {
+    throw new Error(`invalid blueprint.recommendedFoundation: unknown project '${recommendedFoundation}'`)
+  }
+  return {
+    recommendedFoundation,
+    rationale: assertText('blueprint.rationale', blueprint.rationale, 4000),
+    steps: objectList('blueprint.steps', blueprint.steps, 3, 12, (step, field) => {
+      const borrowFrom = assertText(`${field}.borrowFrom`, step.borrowFrom, 200)
+      if (!projectNames.has(borrowFrom)) {
+        throw new Error(`invalid ${field}.borrowFrom: unknown project '${borrowFrom}'`)
+      }
+      return {
+        stage: assertText(`${field}.stage`, step.stage, 200),
+        borrowFrom,
+        part: assertText(`${field}.part`, step.part, 300),
+        action: assertText(`${field}.action`, step.action, 4000),
+      }
+    }),
+  }
+}
+
+function textList(field, value, min, max, maxLength) {
+  if (!Array.isArray(value) || value.length < min || value.length > max) {
+    throw new Error(`invalid ${field}: expected ${min}-${max} items`)
+  }
+  return value.map((item, index) => assertText(`${field}[${index}]`, item, maxLength))
+}
+
+function objectList(field, value, min, max, normalize) {
+  if (!Array.isArray(value) || value.length < min || value.length > max) {
+    throw new Error(`invalid ${field}: expected ${min}-${max} items`)
+  }
+  return value.map((item, index) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`invalid ${field}[${index}]: must be an object`)
+    }
+    return normalize(item, `${field}[${index}]`)
+  })
 }
 
 /**
@@ -1023,6 +1368,17 @@ export function applyGrade(node, grade, now = new Date()) {
  */
 export function selectPractice(domain, count, now = new Date()) {
   const nodes = Object.values(domain.nodes)
+  const workflow = ensureWorkflow(domain)
+  if (workflow.phase !== 'review') return []
+  if (workflow.reviewStartedAt !== null) {
+    const reviewed = new Set((domain.attempts ?? [])
+      .filter(attempt => attempt.source !== 'card'
+        && attempt.grade >= 3
+        && Date.parse(attempt.ts) >= Date.parse(workflow.reviewStartedAt))
+      .map(attempt => attempt.nodeId))
+    const firstPass = nodes.filter(node => !reviewed.has(node.id))
+    if (firstPass.length > 0) return firstPass.slice(0, 1)
+  }
   const masteryOf = (id) => {
     if (!Object.hasOwn(domain.nodes, id)) {
       throw new Error(`invalid stored curriculum: unknown dependency '${id}'`)
@@ -1050,6 +1406,7 @@ export function selectPractice(domain, count, now = new Date()) {
  * @returns {number} the due-node count.
  */
 export function dueCount(domain, now = new Date()) {
+  if (ensureWorkflow(domain).phase !== 'review') return 0
   const nowMs = now.getTime()
   return Object.values(domain.nodes).filter(n => Date.parse(n.dueAt) <= nowMs).length
 }

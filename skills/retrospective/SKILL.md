@@ -1,11 +1,11 @@
 ---
 name: retrospective
-description: Use after a practice session or when the learner notices a recurring pattern, to review progress and adjust the curriculum before the next cycle. Reads learn_status and writes learn_review. Triggered by "how am I doing", "let's review", "what should I change", "retrospective".
+description: Use during the review phase after a practice session or when the learner notices a recurring pattern, to inspect progress and adjust the curriculum. Reads learn_status and writes learn_review.
 ---
 
 # Retrospective
 
-Close the loop: turn recent feedback into a concrete adjustment, then hand back to practice.
+Close the review loop: turn recent feedback into a concrete adjustment, then hand back to the next scheduled review. Do not use this to interrupt ordered learning or literature reading.
 
 ## Process
 

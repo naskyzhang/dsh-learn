@@ -160,6 +160,14 @@ export const companionStyles = `
   font-weight: 700;
 }
 
+.dsh-learn-review-error {
+  margin: 0 2px 6px;
+  color: #d76a5f;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
 .dsh-learn-tree-list {
   display: grid;
   gap: 4px;
@@ -170,6 +178,34 @@ export const companionStyles = `
   padding: 6px 7px;
   border-left: 2px solid color-mix(in srgb, var(--learn-accent) 45%, transparent);
   background: color-mix(in srgb, var(--learn-accent) 7%, transparent);
+}
+
+.dsh-learn-review-button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dsh-learn-review-button:hover .dsh-learn-skill-title,
+.dsh-learn-review-button:focus-visible .dsh-learn-skill-title {
+  color: var(--learn-accent);
+}
+
+.dsh-learn-review-button:focus-visible {
+  outline: 1px solid var(--learn-accent);
+  outline-offset: 3px;
+}
+
+.dsh-learn-review-button:disabled {
+  cursor: wait;
+  opacity: .68;
 }
 
 .dsh-learn-skill-line {

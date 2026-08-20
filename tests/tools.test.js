@@ -27,6 +27,75 @@ async function fixture(t) {
   return { store, execute }
 }
 
+function literatureRecommendations() {
+  const today = new Date().toISOString().slice(0, 10)
+  const reading = (index, type = 'paper') => ({
+    title: `Canonical ${index}`,
+    author: `Author ${index}`,
+    type,
+    url: `https://example.com/canonical-${index}`,
+    reason: 'High-signal primary source.',
+  })
+  const recent = index => ({
+    title: `Recent ${index}`,
+    author: `Recent Author ${index}`,
+    type: 'technical-blog',
+    url: `https://example.com/recent-${index}`,
+    reason: 'Important recent development.',
+    publishedAt: today,
+    heatEvidence: 'Strong public discussion and adoption.',
+  })
+  const expert = index => ({
+    name: `Expert ${index}`,
+    authority: 'Recognized field leader.',
+    artifactTitle: `Interview ${index}`,
+    artifactType: 'interview',
+    artifactUrl: `https://example.com/expert-${index}`,
+    keyViewpoint: 'A central field insight.',
+  })
+  return {
+    authoritative: [reading(1), reading(2, 'article'), reading(3, 'technical-blog')],
+    trending: [recent(1), recent(2)],
+    experts: [expert(1), expert(2), expert(3)],
+  }
+}
+
+function openSourceBlueprint() {
+  return {
+    projects: [
+      {
+        name: 'Alpha',
+        url: 'https://github.com/example/alpha',
+        license: 'MIT',
+        whyWorthLearning: 'Small, readable core.',
+        implementation: 'Event-driven core with adapter ports.',
+        strengths: ['Clear boundaries'],
+        weaknesses: ['Few production safeguards'],
+        borrowParts: [{ part: 'Adapter ports', useFor: 'Integration isolation', adaptation: 'Implement only required ports' }],
+      },
+      {
+        name: 'Beta',
+        url: 'https://github.com/example/beta',
+        license: 'Apache-2.0',
+        whyWorthLearning: 'Mature distributed runtime.',
+        implementation: 'Durable scheduler and worker protocol.',
+        strengths: ['Operational maturity'],
+        weaknesses: ['Complex deployment'],
+        borrowParts: [{ part: 'Worker protocol', useFor: 'Reliable execution', adaptation: 'Begin with one worker type' }],
+      },
+    ],
+    blueprint: {
+      recommendedFoundation: 'Alpha',
+      rationale: 'The smaller core is a better zero-to-one base.',
+      steps: [
+        { stage: 'Core', borrowFrom: 'Alpha', part: 'Event core', action: 'Implement the domain loop.' },
+        { stage: 'Ports', borrowFrom: 'Alpha', part: 'Adapter ports', action: 'Define integration boundaries.' },
+        { stage: 'Runtime', borrowFrom: 'Beta', part: 'Worker protocol', action: 'Add durability after validation.' },
+      ],
+    },
+  }
+}
+
 test('curriculum tool rejects invalid graphs before replacing state', async (t) => {
   const { store, execute } = await fixture(t)
 
@@ -143,9 +212,56 @@ test('curriculum and resource tools hang name+url materials on skill nodes', asy
   ])
   assert.equal(saved.resources.length, 2)
 
+  const lesson = await execute('learn_lesson', { action: 'next' })
+  assert.match(lesson.text, /Intro Guide — https:\/\/example\.com\/intro/)
+  assert.match(lesson.text, /Deep Dive — https:\/\/example\.com\/deep/)
+})
+
+test('tools enforce ordered lessons, literature, then review from the first node', async (t) => {
+  const { store, execute } = await fixture(t)
+
+  const blocked = await execute('learn_next_practice', { count: 1 })
+  assert.match(blocked.text, /Continue the ordered first learning pass/)
+  await execute('learn_log_attempt', { nodeId: 'advanced', grade: 4, source: 'card' })
+  await assert.rejects(
+    execute('learn_lesson', { action: 'complete', nodeId: 'advanced' }),
+    /next lesson is 'basics'/,
+  )
+  await execute('learn_lesson', { action: 'complete', nodeId: 'basics' })
+  const finalLesson = await execute('learn_lesson', { action: 'complete', nodeId: 'advanced' })
+  assert.match(finalLesson.text, /literature-reading phase/)
+
+  await execute('learn_literature', { action: 'recommend', ...literatureRecommendations() })
+  assert.equal((await store.require('Testing')).workflow.phase, 'literature')
+  await assert.rejects(
+    execute('learn_literature', { action: 'complete' }),
+    /requires confirmed: true/,
+  )
+  const completed = await execute('learn_literature', { action: 'complete', confirmed: true })
+  assert.match(completed.text, /First node: 基础 \/ Basics/)
+  assert.equal((await store.require('Testing')).workflow.phase, 'review')
+
   const practice = await execute('learn_next_practice', { count: 1 })
-  assert.match(practice.text, /Intro Guide — https:\/\/example\.com\/intro/)
-  assert.match(practice.text, /Deep Dive — https:\/\/example\.com\/deep/)
+  assert.match(practice.text, /基础 \(id: basics/)
+  await execute('learn_log_attempt', { nodeId: 'basics', grade: 4 })
+  const secondPractice = await execute('learn_next_practice', { count: 1 })
+  assert.match(secondPractice.text, /进阶 \(id: advanced/)
+  await execute('learn_log_attempt', { nodeId: 'advanced', grade: 2 })
+  const retry = await execute('learn_next_practice', { count: 3 })
+  assert.match(retry.text, /进阶 \(id: advanced/)
+  const finalAttempt = await execute('learn_log_attempt', { nodeId: 'advanced', grade: 3 })
+  assert.match(finalAttempt.text, /start learn_open_source/)
+  assert.equal((await store.require('Testing')).workflow.phase, 'capstone')
+
+  const recommendation = openSourceBlueprint()
+  await assert.rejects(
+    execute('learn_open_source', { ...recommendation, projects: recommendation.projects.slice(0, 1) }),
+    /exactly 2 or 3/,
+  )
+  const final = await execute('learn_open_source', recommendation)
+  assert.match(final.text, /Open-source comparison:/)
+  assert.match(final.text, /Recommended foundation: Alpha/)
+  assert.equal((await store.require('Testing')).workflow.phase, 'completed')
 })
 
 test('parallel attempt tools preserve every attempt and XP award', async (t) => {

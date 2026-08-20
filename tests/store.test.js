@@ -6,9 +6,17 @@ import test from 'node:test'
 
 import {
   LearnStore,
+  advanceReviewToCapstone,
   applyGrade,
+  completeLesson,
+  completeLiterature,
+  ensureWorkflow,
+  isCourseComplete,
   newDomain,
   newNode,
+  selectPractice,
+  setLiteratureRecommendations,
+  setOpenSourceBlueprint,
   validateCourseShortTitle,
   validateCurriculum,
   validateGrade,
@@ -96,7 +104,7 @@ test('companion snapshot restores the latest domain and derives level progress',
     level: 2,
     levelProgress: 25,
     streak: 3,
-    dueCount: 1,
+    dueCount: 0,
     nodes: [{
       id: 'basics',
       title: 'Basics',
@@ -152,6 +160,177 @@ test('companion drops a stale active id after another Host pauses the course', a
 
   assert.equal((await first.companionSnapshot()).domainId, 'new')
   assert.equal((await first.load('old')).lifecycle.state, 'paused')
+})
+
+test('workflow teaches lessons in order, then gates review behind literature', () => {
+  const domain = newDomain('Journey')
+  domain.nodes.first = newNode({ id: 'first', title: '第一课', titleEn: 'First', leverage: 100 })
+  domain.nodes.second = newNode({ id: 'second', title: '第二课', titleEn: 'Second', leverage: 80 })
+
+  assert.equal(ensureWorkflow(domain).phase, 'learning')
+  assert.throws(() => completeLesson(domain, 'second'), /next lesson is 'first'/)
+  assert.equal(completeLesson(domain, 'first').next.id, 'second')
+  assert.equal(completeLesson(domain, 'second').phase, 'literature')
+  assert.deepEqual(selectPractice(domain, 1), [])
+
+  const now = new Date('2026-08-19T00:00:00.000Z')
+  setLiteratureRecommendations(domain, [
+    {
+      title: 'Canonical One',
+      author: 'A',
+      type: 'paper',
+      url: 'https://example.com/canonical-1',
+      reason: 'Foundational result.',
+    },
+    {
+      title: 'Canonical Two',
+      author: 'B',
+      type: 'article',
+      url: 'https://example.com/canonical-2',
+      reason: 'Defines the field.',
+    },
+    {
+      title: 'Canonical Three',
+      author: 'C',
+      type: 'technical-blog',
+      url: 'https://example.com/canonical-3',
+      reason: 'Canonical implementation account.',
+    },
+  ], [
+    {
+      title: 'Recent One',
+      author: 'D',
+      type: 'paper',
+      url: 'https://example.com/recent-1',
+      reason: 'Recent advance.',
+      publishedAt: '2026-06-01',
+      heatEvidence: 'High citation and discussion growth.',
+    },
+    {
+      title: 'Recent Two',
+      author: 'E',
+      type: 'technical-blog',
+      url: 'https://example.com/recent-2',
+      reason: 'Widely adopted new technique.',
+      publishedAt: '2025-10-01',
+      heatEvidence: 'Strong repository and community activity.',
+    },
+  ], [
+    {
+      name: 'Expert One',
+      authority: 'Founded the field.',
+      artifactTitle: 'Interview One',
+      artifactType: 'interview',
+      artifactUrl: 'https://example.com/expert-1',
+      keyViewpoint: 'Start from first principles.',
+    },
+    {
+      name: 'Expert Two',
+      authority: 'Led the canonical implementation.',
+      artifactTitle: 'Talk Two',
+      artifactType: 'talk',
+      artifactUrl: 'https://example.com/expert-2',
+      keyViewpoint: 'Systems constraints shape the method.',
+    },
+    {
+      name: 'Expert Three',
+      authority: 'Authored the standard reference.',
+      artifactTitle: 'Essay Three',
+      artifactType: 'essay',
+      artifactUrl: 'https://example.com/expert-3',
+      keyViewpoint: 'Evaluation must match real use.',
+    },
+  ], now)
+
+  const first = completeLiterature(domain, new Date('2026-08-20T00:00:00.000Z'))
+  assert.equal(first.id, 'first')
+  assert.equal(ensureWorkflow(domain).phase, 'review')
+  assert.equal(selectPractice(domain, 1)[0].id, 'first')
+  domain.attempts.push({
+    id: 'att-card-second',
+    nodeId: 'second',
+    drillId: null,
+    grade: 4,
+    note: '',
+    source: 'card',
+    ts: '2026-08-20T00:30:00.000Z',
+  })
+  assert.equal(selectPractice(domain, 1)[0].id, 'first')
+  domain.attempts.push({
+    id: 'att-first',
+    nodeId: 'first',
+    drillId: null,
+    grade: 4,
+    note: '',
+    ts: '2026-08-20T01:00:00.000Z',
+  })
+  assert.equal(selectPractice(domain, 1)[0].id, 'second')
+  domain.attempts.push({
+    id: 'att-second-wrong',
+    nodeId: 'second',
+    drillId: null,
+    grade: 2,
+    note: '',
+    source: 'scheduled',
+    ts: '2026-08-20T02:00:00.000Z',
+  })
+  assert.equal(advanceReviewToCapstone(domain), false)
+  assert.deepEqual(selectPractice(domain, 3).map(node => node.id), ['second'])
+  domain.attempts.push({
+    id: 'att-second-correct',
+    nodeId: 'second',
+    drillId: null,
+    grade: 3,
+    note: '',
+    source: 'scheduled',
+    ts: '2026-08-20T03:00:00.000Z',
+  })
+  assert.equal(advanceReviewToCapstone(domain), true)
+  assert.equal(ensureWorkflow(domain).phase, 'capstone')
+
+  const capstone = setOpenSourceBlueprint(domain, [
+    {
+      name: 'Alpha',
+      url: 'https://github.com/example/alpha',
+      license: 'MIT',
+      whyWorthLearning: 'Clear modular architecture.',
+      implementation: 'A small event-driven core with adapters.',
+      strengths: ['Simple boundaries'],
+      weaknesses: ['Limited scale'],
+      borrowParts: [{ part: 'Adapter layer', useFor: 'Integration isolation', adaptation: 'Keep only needed ports' }],
+    },
+    {
+      name: 'Beta',
+      url: 'https://github.com/example/beta',
+      license: 'Apache-2.0',
+      whyWorthLearning: 'Production-grade orchestration.',
+      implementation: 'A layered scheduler with durable workers.',
+      strengths: ['Operational maturity'],
+      weaknesses: ['Higher complexity'],
+      borrowParts: [{ part: 'Worker protocol', useFor: 'Reliable execution', adaptation: 'Start with one worker type' }],
+    },
+  ], {
+    recommendedFoundation: 'Alpha',
+    rationale: 'Its small core is the fastest foundation.',
+    steps: [
+      { stage: 'Core', borrowFrom: 'Alpha', part: 'Event core', action: 'Implement the minimal domain loop.' },
+      { stage: 'Ports', borrowFrom: 'Alpha', part: 'Adapter layer', action: 'Add explicit integration interfaces.' },
+      { stage: 'Runtime', borrowFrom: 'Beta', part: 'Worker protocol', action: 'Add durable execution after the core works.' },
+    ],
+  }, new Date('2026-08-21T00:00:00.000Z'))
+  assert.equal(capstone.projects.length, 2)
+  assert.equal(ensureWorkflow(domain).phase, 'completed')
+  assert.equal(isCourseComplete(domain), true)
+})
+
+test('literature slate enforces exact recommendation quotas', () => {
+  const domain = newDomain('Reading')
+  domain.nodes.only = newNode({ id: 'only', title: '单元', titleEn: 'Unit', leverage: 100 })
+  completeLesson(domain, 'only')
+  assert.throws(
+    () => setLiteratureRecommendations(domain, [], [], [], new Date('2026-08-19T00:00:00.000Z')),
+    /exactly 3/,
+  )
 })
 
 test('curriculum validation normalizes valid input', () => {

@@ -26,8 +26,22 @@ export interface ConnectionHandle {
   }
 }
 
+export interface ConversationHandle {
+  send(text: string): Promise<void>
+}
+
+export interface SessionScopeHandle {
+  get(name: 'conversation'): ConversationHandle | undefined
+}
+
+export interface SessionsHandle {
+  readonly list: ObservableSnapshot<{ readonly current: string | undefined }>
+  scope(sessionId: string): SessionScopeHandle | undefined
+}
+
 export interface ClientContext {
   readonly connection: ConnectionHandle
+  readonly sessions: SessionsHandle
   effect(setup: () => void | (() => void), description: string): void
   readonly slots: {
     inject(name: string, mount: () => (() => void)): void

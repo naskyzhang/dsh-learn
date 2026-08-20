@@ -4,19 +4,20 @@
 
 [![topic](https://img.shields.io/badge/topic-dsh--plugin-blue)](https://github.com/topics/dsh-plugin)
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that turns “learn a domain” into a closed loop:
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that turns “learn a domain” into a durable staged journey:
 
 1. **Skill deconstruction** — build a Pareto skill tree and mark the ~20% of nodes that unlock ~80% of outcomes
-2. **Source the best** — find top experts and collect their open source, docs, and papers
-3. **Gamified practice** — deliberate practice with SM-2 spaced repetition
-4. **Instant feedback + retrospective** — grade each attempt, update mastery and schedule, refine the tree, then loop
+2. **Ordered learning** — complete the whole curriculum in sequence without unsolicited review prompts
+3. **Literature reading** — after the lessons, read 3 canonical works, 2 high-heat works from the past year, and the key primary ideas of 3 authoritative people
+4. **Correct review from the beginning** — retry each chapter until correct before advancing
+5. **Open-source blueprint** — compare 2–3 exemplary implementations and map exactly what to borrow for a zero-to-one build
 
-The stack stays small: one learning kernel, tools for the four steps, and stage skills. Design and data model: [`docs/DESIGN.md`](docs/DESIGN.md).
+The stack stays small: one learning kernel, durable phase state, model-facing tools, and stage skills. Design and data model: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Status
 
-- **Ready**: closed-loop `learn_*` tools, five stage skills, JSON store, SM-2 scheduling — runnable in chat alone.
-- **Ready**: no separate web app; `dsh.client` adds a draggable pixel cat and five-stage knowledge plant via `shell.overlay`. Expanding the companion shows the curriculum as an adaptive-height skill-tree card, including mastery and recommended links. See [`docs/UI-INTEGRATION.md`](docs/UI-INTEGRATION.md).
+- **Ready**: ordered learning → literature → correct-answer review → open-source blueprint through `learn_*` tools, six stage skills, JSON storage, and SM-2 grading.
+- **Ready**: no separate web app; `dsh.client` adds a draggable pixel cat and five-stage knowledge plant via `shell.overlay`. Expanding the companion shows the curriculum as an adaptive-height skill-tree card, including mastery and recommended links; clicking a skill node starts its review in the current conversation. See [`docs/UI-INTEGRATION.md`](docs/UI-INTEGRATION.md).
 - **Note**: written against DSH pre-release APIs (`0.1.0-rc`); verify with the checklist below after install.
 
 ## Install
@@ -45,22 +46,25 @@ Skills under `skills/` need to be on the DSH skill loader path (for example work
 
 ## Usage
 
-After install, say what you want to learn; the orchestrator skill walks the four steps:
+After install, say what you want to learn; the orchestrator advances the durable course phases:
 
 > Help me learn Rust ownership.
 
-A typical loop:
+A typical course journey:
 
 1. `learn_course list` — inspect courses; before switching an unfinished course, choose pause or end
 2. `learn_curriculum` — first write a semantic card summary in `shortTitle` (≤8 Chinese characters), then generate and save the bilingual skill tree (optionally render with [drawio-skill](https://github.com/Agents365-ai/drawio-skill))
-3. `learn_add_resource` — attach expert sources to skill nodes (`nodeIds` required; each node stores title + url)
-4. `learn_next_practice` → quiz → `learn_log_attempt` (score 0–5) for instant feedback
-5. `learn_review` — retrospect and adjust the tree for the next round
-6. `learn_status` anytime for progress, streak, weak spots, and recommended materials
+3. `learn_lesson next/complete` — teach every node in curriculum order; ordinary conversation never proactively starts review
+4. `learn_literature recommend` — after all lessons, save 3 canonical + 2 recent-hot readings and 3 authoritative people with one primary artifact and key viewpoint each
+5. `learn_literature complete` (`confirmed: true`) — enter review only after the learner explicitly finishes the reading phase
+6. `learn_next_practice` → quiz → `learn_log_attempt` (score 0–5) — start at node one; grades 3–5 advance to the next chapter
+7. `learn_open_source` — after every chapter is correct, compare 2–3 projects and save a concrete zero-to-one borrowing plan
+8. `learn_review` — retrospect and adjust the tree only when explicitly requested
+9. `learn_status` anytime for phase, progress, streak, and weak spots
 
 Only one course can be active at a time. Pause keeps all progress (`learn_course resume` later); end permanently deletes the course JSON.
 
-Each skill node may carry recommended materials as `{ title, url }` — set them when building the curriculum (`nodes[].resources`) or later via `learn_add_resource`. Practice and status surface those name + link pairs.
+Each skill node may carry recommended materials as `{ title, url }` — set them in `nodes[].resources` or later via `learn_add_resource`. Before literature completion, clicking a skill in the companion card is the only explicit review entry; after every ordered review answer is correct, the journey automatically enters its open-source capstone.
 
 ## Config
 
@@ -69,7 +73,7 @@ Each skill node may carry recommended materials as `{ title, url }` — set them
 | Key | Default | Description |
 |-----|---------|-------------|
 | `storeDir` | `''` | Learning state directory; empty → `$DSH_HOME/dsh-learn` (or `~/.dsh-learn` if unset) |
-| `newSkillsPerDay` | `3` | Default new skills introduced per practice session |
+| `newSkillsPerDay` | `3` | Default number of skills returned per review session |
 | `dailyReviewLimit` | `20` | Max items returned by one `learn_next_practice` |
 
 ## Storage consistency & validation
@@ -99,9 +103,9 @@ dsh-learn/
 │   ├── bridge.js         # Host Connection RPC: companion long-poll snapshots
 │   ├── client/           # shell overlay, pixel cat/plant, browser controller
 │   ├── store.js          # JSON store + SM-2 + data model
-│   └── tools.js          # eight learn_* tools
+│   └── tools.js          # eleven learn_* tools
 ├── lib/client.js         # browser bundle for the DSH Client loader
-├── skills/               # orchestrator + four stage skills (SKILL.md)
+├── skills/               # orchestrator + five stage skills (SKILL.md)
 ├── tests/                # concurrency, graph, and tool boundary tests
 └── docs/
     ├── DESIGN.md         # architecture / data model / scheduling

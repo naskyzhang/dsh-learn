@@ -2,10 +2,10 @@
  * dsh-learn plugin entry.
  *
  * Registers the model-facing learn_* tools on `ctx.tools` and wires them to a
- * per-domain JSON learning store. The tools implement one closed learning loop:
- * deconstruct a domain into a Pareto skill tree, source the best resources,
- * practice by spaced repetition, and log graded feedback that reschedules and
- * re-weights the tree.
+ * per-domain JSON learning store. The tools implement one durable course journey:
+ * deconstruct a domain, teach every node in order, complete a curated literature
+ * phase, review every node correctly from the beginning, then synthesize a
+ * zero-to-one blueprint from exemplary open-source implementations.
  *
  * This is a function plugin: it named-exports `name` / `inject` / `Config` /
  * `apply` and has no default export, so the Loader keeps its injection metadata.
@@ -27,7 +27,7 @@ export const inject = ['tools']
  * Deployment configuration for the learning loop.
  * @typedef {object} Config
  * @property {string} storeDir - directory for per-domain JSON state; empty resolves a default under DSH_HOME.
- * @property {number} newSkillsPerDay - default number of skills a practice session introduces.
+ * @property {number} newSkillsPerDay - legacy config key for the default review batch size.
  * @property {number} dailyReviewLimit - hard cap on skills returned per practice call.
  */
 export const Config = z.object({

@@ -46,10 +46,12 @@ export interface LearnCompanionInjected {
   hooks: {
     companion: ObservableSnapshot<LearnCompanionSnapshot>
   }
+  startReview(node: LearnCompanionNode): Promise<void>
 }
 
 export interface LearnCompanionProps {
   readonly useCompanion: SnapshotSelectorHook<LearnCompanionSnapshot>
+  readonly startReview: (node: LearnCompanionNode) => Promise<void>
 }
 
 const STAGE_NAMES = ['种子', '嫩芽', '叶丛', '花苞', '开花'] as const
@@ -82,7 +84,7 @@ interface DragState {
  * @param props - framework-bound companion selector.
  * @returns compact floating learning status.
  */
-export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
+export function LearnCompanion({ useCompanion, startReview }: LearnCompanionProps) {
   const snapshot = useCompanion(value => value)
   const previousXp = useRef<number | null>(null)
   const previousLevel = useRef<number | null>(null)
@@ -97,6 +99,8 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
   const [catAction, setCatAction] = useState<CatAction | null>(null)
   const [reward, setReward] = useState(false)
   const [evolving, setEvolving] = useState(false)
+  const [reviewingNodeId, setReviewingNodeId] = useState<string | null>(null)
+  const [reviewError, setReviewError] = useState<string | null>(null)
   const [plantDebug, setPlantDebug] = useState<PlantDebugOverride | null>(null)
   const plantDebugRef = useRef<PlantDebugOverride | null>(null)
   plantDebugRef.current = plantDebug
@@ -244,6 +248,21 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
     const next = moveTo({ x: current.x + delta.x, y: current.y + delta.y })
     savePosition(next)
   }, [celebrateEvolution, expanded, flashReward, moveTo, startCatAction])
+
+  const beginReview = useCallback(async (node: LearnCompanionNode) => {
+    if (reviewingNodeId !== null) return
+    setReviewingNodeId(node.id)
+    setReviewError(null)
+    try {
+      await startReview(node)
+      setExpanded(false)
+      startCatAction('meow')
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : '无法开始复习，请稍后重试。')
+    } finally {
+      setReviewingNodeId(null)
+    }
+  }, [reviewingNodeId, startCatAction, startReview])
 
   useEffect(() => {
     const previous = previousXp.current
@@ -465,8 +484,8 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
             className="dsh-learn-details"
             data-placement={cardPlacement}
             style={detailStyle}
-            role="status"
-            aria-live="polite"
+            role="region"
+            aria-label="学习详情"
           >
             <div className="dsh-learn-card-summary">
               <div className="dsh-learn-title">{title}</div>
@@ -483,6 +502,9 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
                   <span>技能树</span>
                   <span>{skillTree.length} 项</span>
                 </div>
+                {reviewError !== null && (
+                  <div className="dsh-learn-review-error" role="alert">{reviewError}</div>
+                )}
                 <div className="dsh-learn-tree-list">
                   {skillTree.map(({ node, depth }) => (
                     <div
@@ -490,19 +512,29 @@ export function LearnCompanion({ useCompanion }: LearnCompanionProps) {
                       key={node.id}
                       style={{ marginLeft: `${depth * 10}px` }}
                     >
-                      <div className="dsh-learn-skill-line">
-                        <span className="dsh-learn-tree-branch" aria-hidden="true">
-                          {depth === 0 ? '◆' : '└'}
+                      <button
+                        className="dsh-learn-review-button"
+                        type="button"
+                        disabled={reviewingNodeId !== null}
+                        aria-label={`开始复习${node.title}`}
+                        onClick={() => { void beginReview(node) }}
+                      >
+                        <span className="dsh-learn-skill-line">
+                          <span className="dsh-learn-tree-branch" aria-hidden="true">
+                            {reviewingNodeId === node.id ? '…' : depth === 0 ? '◆' : '└'}
+                          </span>
+                          <span className="dsh-learn-skill-names" title={`${node.title} / ${node.titleEn}`}>
+                            <span className="dsh-learn-skill-title">{displayTitle(node.title)}</span>
+                            <span className="dsh-learn-skill-title-en">{displayTitle(node.titleEn)}</span>
+                          </span>
+                          <span className="dsh-learn-skill-score">
+                            {reviewingNodeId === node.id ? '发送中' : `${node.mastery}%`}
+                          </span>
                         </span>
-                        <span className="dsh-learn-skill-names" title={`${node.title} / ${node.titleEn}`}>
-                          <span className="dsh-learn-skill-title">{displayTitle(node.title)}</span>
-                          <span className="dsh-learn-skill-title-en">{displayTitle(node.titleEn)}</span>
+                        <span className="dsh-learn-mastery-track" aria-hidden="true">
+                          <span style={{ width: `${node.mastery}%` }} />
                         </span>
-                        <span className="dsh-learn-skill-score">{node.mastery}%</span>
-                      </div>
-                      <div className="dsh-learn-mastery-track" aria-hidden="true">
-                        <span style={{ width: `${node.mastery}%` }} />
-                      </div>
+                      </button>
                       {node.resources.slice(0, 2).map(resource => (
                         <a
                           className="dsh-learn-resource"
